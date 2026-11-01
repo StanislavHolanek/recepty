@@ -676,7 +676,7 @@ async function renderEdit(id) {
       <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
     </a>
     <p class="hint" style="margin:14px 2px 0">…nebo recept napište rovnou sem:</p>`}
-    <form class="form" id="ef">
+    <form class="form has-sticky" id="ef">
       <label for="f-title">Název</label>
       <input type="text" id="f-title" required value="${esc(r.title)}" placeholder="např. Svíčková">
 
@@ -710,7 +710,7 @@ async function renderEdit(id) {
       <label for="f-src">Zdroj <span class="help">– odkud recept je</span></label>
       <input type="text" id="f-src" value="${esc(r.source)}" placeholder="např. sešit od maminky, kniha Vaříme s…">
 
-      <div class="row"><button class="btn primary" type="submit" id="saveBtn">Uložit recept</button></div>
+      <div class="sticky-action"><button class="btn primary" type="submit" id="saveBtn">Uložit recept</button></div>
       ${orig ? '<div class="row"><button class="btn danger" type="button" id="delBtn">Smazat recept</button></div>' : ''}
     </form>`;
 
@@ -920,14 +920,14 @@ async function renderFoto() {
   app.innerHTML = `
     <div class="hero"><div><div class="script hello">Nafotit recept</div>
       <div class="sub">Stačí název a fotka papírku. Claude z ní pak udělá ingredience a postup.</div></div></div>
-    <form class="form" id="ff">
+    <form class="form has-sticky" id="ff">
       <label for="ff-title">Název jídla</label>
       <input type="text" id="ff-title" required placeholder="např. Babiččina bábovka" autocomplete="off">
       <label>Fotky papírku <span class="help">– až ${MAX_PHOTOS}, třeba přední a zadní strana</span></label>
       <div class="photo-edit" id="ffPhs"></div>
       <label for="ff-note">Poznámka pro Clauda <span class="help">(nepovinné)</span></label>
       <input type="text" id="ff-note" placeholder="např. od maminky, dělám dvojnásobek" autocomplete="off">
-      <div class="row"><button class="btn primary" type="submit" id="ffSave">Uložit k přepisu</button></div>
+      <div class="sticky-action"><button class="btn primary" type="submit" id="ffSave">Uložit k přepisu</button></div>
     </form>`;
 
   const draw = () => {
