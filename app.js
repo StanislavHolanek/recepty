@@ -167,6 +167,8 @@ function normalizeRecipe(r) {
     source: r.source || '',
     photos: r.photos || [],
     favorite: !!r.favorite,
+    // 'ceka' = jen nafocený papírek, přepis do ingrediencí a postupu udělá Claude
+    status: r.status === 'ceka' ? 'ceka' : 'hotovo',
   };
 }
 
@@ -382,7 +384,7 @@ async function route() {
   releaseWakeLock();
   window.scrollTo(0, 0);
   const [, view = '', id] = (location.hash.slice(1) || '/').split('/');
-  const tab = { '': 'list', new: 'new', shop: 'shop', more: 'more' }[view] || '';
+  const tab = { '': 'list', new: 'new', foto: 'new', shop: 'shop', more: 'more' }[view] || '';
   $$('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
 
   const session = await store.session();
@@ -394,6 +396,7 @@ async function route() {
     if (view === 'r') await renderDetail(decodeURIComponent(id));
     else if (view === 'edit') await renderEdit(decodeURIComponent(id));
     else if (view === 'new') await renderEdit(null);
+    else if (view === 'foto') await renderFoto();
     else if (view === 'shop') await renderShop();
     else if (view === 'doma') await renderDoma();
     else if (view === 'more') await renderMore();
@@ -486,8 +489,9 @@ async function renderList() {
     }
     const urls = await store.photoUrls(list.map((r) => r.photos[0]).filter(Boolean));
     $('#cards').innerHTML = list.map((r) => {
-      const meta = [r.categories.join(', '), formatMinutes(r.time_minutes), r.servings ? `${r.servings} ${plural(r.servings, 'porce', 'porce', 'porcí')}` : '']
-        .filter(Boolean).join(' · ');
+      const meta = r.status === 'ceka' ? '✍️ Čeká na přepis'
+        : [r.categories.join(', '), formatMinutes(r.time_minutes), r.servings ? `${r.servings} ${plural(r.servings, 'porce', 'porce', 'porcí')}` : '']
+          .filter(Boolean).join(' · ');
       const thumb = r.photos[0] && urls[r.photos[0]]
         ? `<img class="thumb" src="${esc(urls[r.photos[0]])}" alt="" loading="lazy">`
         : flowerThumb(r.title);
@@ -547,6 +551,8 @@ async function renderDetail(id) {
       ${r.time_minutes ? `<span class="pill">⏱ ${esc(formatMinutes(r.time_minutes))}</span>` : ''}
       ${r.tags.map((t) => `<span class="pill">#${esc(t)}</span>`).join('')}
     </div>
+
+    ${r.status === 'ceka' ? `<div class="notice">✍️ <div><b>Čeká na přepis</b>Recept je zatím jen nafocený. Claude ho přepíše do ingrediencí a postupu – do té doby můžete vařit podle fotky (ťukněte na ni pro zvětšení).</div></div>` : ''}
 
     ${r.ingredients.length ? `<div class="section">
       ${h3('Ingredience')} <span class="spacer"></span>
@@ -658,6 +664,12 @@ async function renderEdit(id) {
   const allCats = sortCats([...CATEGORIES.map(([c]) => c), ...recipes.flatMap((x) => x.categories), ...r.categories]);
 
   app.innerHTML = `
+    ${orig ? '' : `<a class="doma-link" href="#/foto">
+      <span class="doma-ico">📷</span>
+      <span><b>Jen nafotit papírek</b><small>Zadáte název a fotku, Claude recept přepíše za vás</small></span>
+      <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+    </a>
+    <p class="hint" style="margin:14px 2px 0">…nebo recept napište rovnou sem:</p>`}
     <form class="form" id="ef">
       <label for="f-title">Název</label>
       <input type="text" id="f-title" required value="${esc(r.title)}" placeholder="např. Svíčková">
@@ -753,6 +765,8 @@ async function renderEdit(id) {
         source: $('#f-src').value.trim(),
         photos: [...keptPhotos, ...uploaded],
       });
+      // Kdo nafocený recept ručně dopíše, tím ho zároveň zpracoval
+      if (rec.ingredients.length || rec.steps.length) rec.status = 'hotovo';
       await store.saveRecipe(rec);
       await store.removePhotos(removed);
       await loadRecipes(true);
@@ -893,6 +907,70 @@ async function renderDoma() {
   draw();
 }
 
+/* ================= Nafotit recept (přepíše Claude) ================= */
+
+async function renderFoto() {
+  setTitle('Nafotit recept', true);
+  const photos = []; // {file, url}
+  app.innerHTML = `
+    <div class="hero"><div><div class="script hello">Nafotit recept</div>
+      <div class="sub">Stačí název a fotka papírku. Claude z ní pak udělá ingredience a postup.</div></div></div>
+    <form class="form" id="ff">
+      <label for="ff-title">Název jídla</label>
+      <input type="text" id="ff-title" required placeholder="např. Babiččina bábovka" autocomplete="off">
+      <label>Fotky papírku <span class="help">– až ${MAX_PHOTOS}, třeba přední a zadní strana</span></label>
+      <div class="photo-edit" id="ffPhs"></div>
+      <label for="ff-note">Poznámka pro Clauda <span class="help">(nepovinné)</span></label>
+      <input type="text" id="ff-note" placeholder="např. od maminky, dělám dvojnásobek" autocomplete="off">
+      <div class="row"><button class="btn primary" type="submit" id="ffSave">Uložit k přepisu</button></div>
+    </form>`;
+
+  const draw = () => {
+    $('#ffPhs').innerHTML =
+      photos.map((p, i) => `<div class="ph"><img src="${esc(p.url)}" alt=""><button type="button" data-n="${i}" aria-label="Odebrat">×</button></div>`).join('') +
+      (photos.length < MAX_PHOTOS
+        ? `<label class="photo-add">${ICON.camera}<span>${photos.length ? 'Další fotka' : 'Vyfotit'}</span><input type="file" accept="image/*" multiple id="ffPhoto"></label>`
+        : '');
+    const input = $('#ffPhoto');
+    if (input) input.onchange = (e) => {
+      const files = [...e.target.files];
+      const free = MAX_PHOTOS - photos.length;
+      if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotky`);
+      for (const file of files.slice(0, free)) photos.push({ file, url: URL.createObjectURL(file) });
+      draw();
+    };
+  };
+  draw();
+  $('#ffPhs').onclick = (e) => {
+    const b = e.target.closest('button[data-n]');
+    if (b) { photos.splice(+b.dataset.n, 1); draw(); }
+  };
+
+  $('#ff').onsubmit = async (e) => {
+    e.preventDefault();
+    if (!photos.length) { toast('Přidejte aspoň jednu fotku'); return; }
+    const btn = $('#ffSave');
+    btn.disabled = true;
+    btn.textContent = 'Ukládám…';
+    try {
+      const rec = normalizeRecipe({ title: $('#ff-title').value, notes: $('#ff-note').value.trim(), status: 'ceka' });
+      for (const p of photos) {
+        // Vyšší rozlišení, aby šel rukopis dobře přečíst
+        const blob = store.mode === 'local' ? p.file : await compressImage(p.file, 2200, 0.85);
+        rec.photos.push(await store.uploadPhoto(rec.id, blob));
+      }
+      await store.saveRecipe(rec);
+      await loadRecipes(true);
+      toast('Uloženo – Claude ho přepíše');
+      location.replace('#/r/' + encodeURIComponent(rec.id));
+    } catch (err) {
+      toast('Uložení se nepovedlo: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = 'Uložit k přepisu';
+    }
+  };
+}
+
 /* ================= Nákupní seznam ================= */
 
 async function renderShop() {
@@ -984,6 +1062,7 @@ async function renderMore() {
   setTitle('Více');
   const recipes = await loadRecipes();
   const email = await store.userEmail();
+  const pending = recipes.filter((r) => r.status === 'ceka');
   app.innerHTML = `
     <div class="section">
       <h3>Účet</h3>
@@ -992,6 +1071,13 @@ async function renderMore() {
         : `<p class="kv">Přihlášen(a): <b>${esc(email)}</b></p>
            <div class="row"><button class="btn" id="logout">Odhlásit</button></div>`}
       <p class="kv">Receptů celkem: <b>${recipes.length}</b></p>
+    </div>
+
+    <div class="section">
+      <h3>Čeká na přepis (${pending.length})</h3>
+      <p class="hint">Nafocené recepty, které Claude ještě nepřepsal. Na počítači se je dozví sám.</p>
+      ${pending.length ? `<ul class="pending">${pending.map((r) => `<li><a href="#/r/${encodeURIComponent(r.id)}">✍️ ${esc(r.title)}</a></li>`).join('')}</ul>` : ''}
+      <div class="row"><a class="btn primary" href="#/foto">${ICON.camera} Nafotit recept</a></div>
     </div>
 
     <div class="section form">

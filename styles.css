@@ -164,6 +164,17 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
 .doma-card .meta.ok { color: var(--ok); font-weight: 700; }
 .doma-card .btn { flex: none; }
 
+/* Nafocené recepty čekající na přepis */
+.notice {
+  display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; padding: 12px 14px;
+  background: var(--sage-soft); border: 1px solid var(--gold); border-radius: var(--radius); font-size: .92rem;
+}
+.notice b { display: block; }
+.pending { list-style: none; margin: 0; padding: 0; }
+.pending li { padding: 8px 2px; border-bottom: 1px solid var(--line); }
+.pending li:last-child { border-bottom: 0; }
+.pending a { color: var(--text); text-decoration: none; font-weight: 600; }
+
 /* Seznam receptů */
 .cards { display: grid; gap: 10px; }
 .card {

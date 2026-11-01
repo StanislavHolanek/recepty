@@ -18,9 +18,13 @@ create table if not exists public.recipes (
   source        text,
   photos        text[] not null default '{}',  -- cesty v úložišti recipe-photos
   favorite      boolean not null default false,
+  status        text not null default 'hotovo',  -- 'ceka' = nafoceno, čeká na přepis
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
+
+-- Pro databáze založené před přidáním stavu receptu
+alter table public.recipes add column if not exists status text not null default 'hotovo';
 
 -- Nákupní seznam -------------------------------------------------------
 create table if not exists public.shopping_items (
