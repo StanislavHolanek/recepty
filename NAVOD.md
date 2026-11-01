@@ -1,4 +1,4 @@
-# Naše recepty: jak aplikaci zprovoznit
+# Martinčina kuchařka: jak aplikaci zprovoznit
 
 Provoz je zdarma: web běží na GitHub Pages, data (recepty, fotky, nákupní seznam) v Supabase.
 

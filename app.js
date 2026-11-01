@@ -74,7 +74,7 @@ function toast(msg) {
 
 function setTitle(title, back) {
   $('#pageTitle').textContent = title;
-  document.title = title === 'Naše recepty' ? title : `${title} · Naše recepty`;
+  document.title = title === 'Martinčina kuchařka' ? title : `${title} · Martinčina kuchařka`;
   $('#backBtn').hidden = !back;
 }
 
@@ -407,12 +407,12 @@ async function route() {
 /* ================= Přihlášení ================= */
 
 function renderLogin() {
-  setTitle('Naše recepty');
+  setTitle('Martinčina kuchařka');
   $('#tabbar').hidden = true;
   app.innerHTML = `
     <form class="login form" id="loginForm">
       ${bouquet()}
-      <h2 class="script">Naše recepty</h2>
+      <h2 class="script">Martinčina kuchařka</h2>
       <p>Přihlaste se, recepty uvidíte jen vy dva.</p>
       <label for="em">E-mail</label>
       <input type="email" id="em" autocomplete="username" required>
@@ -443,7 +443,7 @@ function matches(r, words) {
 }
 
 async function renderList() {
-  setTitle('Naše recepty');
+  setTitle('Martinčina kuchařka');
   const recipes = await loadRecipes();
   const cats = sortCats(recipes.flatMap((r) => r.categories));
   if (state.filter !== 'all' && state.filter !== 'fav' && !cats.includes(state.filter)) state.filter = 'all';

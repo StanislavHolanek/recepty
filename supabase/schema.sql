@@ -1,4 +1,4 @@
--- Naše recepty – databázové schéma pro Supabase
+-- Martinčina kuchařka – databázové schéma pro Supabase
 -- Vložte celé do Supabase → SQL Editor → New query a klikněte na Run.
 -- Skript lze spustit opakovaně, nic nesmaže.
 
