@@ -18,6 +18,7 @@ const ICON = {
   sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   share: '<svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M5 13v7h14v-7"/></svg>',
   camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.5"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M20 16l-5-5-8 8"/></svg>',
 };
 
@@ -283,6 +284,20 @@ class SupabaseStore {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_items' }, cb)
       .subscribe();
   }
+
+  async listPlan(from, to) {
+    const { data, error } = await this.sb.from('meal_plan').select('*').gte('day', from).lte('day', to).order('day').order('created_at');
+    if (error) throw error;
+    return data;
+  }
+  async addPlan(item) {
+    const { error } = await this.sb.from('meal_plan').insert(item);
+    if (error) throw error;
+  }
+  async deletePlan(id) {
+    const { error } = await this.sb.from('meal_plan').delete().eq('id', id);
+    if (error) throw error;
+  }
 }
 
 /* ================= Úložiště: demo v prohlížeči ================= */
@@ -327,6 +342,16 @@ class LocalStore {
     this._set('rc_demo_shop', (await this.listShopping()).filter((i) => !ids.includes(i.id)));
   }
   onShoppingChange() {}
+  async listPlan(from, to) {
+    return this._get('rc_demo_plan', []).filter((p) => p.day >= from && p.day <= to)
+      .sort((a, b) => a.day.localeCompare(b.day) || a.created_at.localeCompare(b.created_at));
+  }
+  async addPlan(item) {
+    this._set('rc_demo_plan', [...this._get('rc_demo_plan', []), { id: uuid(), created_at: new Date().toISOString(), ...item }]);
+  }
+  async deletePlan(id) {
+    this._set('rc_demo_plan', this._get('rc_demo_plan', []).filter((p) => p.id !== id));
+  }
 }
 
 const DEMO_RECIPES = [
@@ -388,9 +413,10 @@ const app = $('#app');
 
 async function route() {
   releaseWakeLock();
+  $$('.sheet-wrap').forEach((s) => s.remove());
   window.scrollTo(0, 0);
   const [, view = '', id] = (location.hash.slice(1) || '/').split('/');
-  const tab = { '': 'list', new: 'new', foto: 'new', shop: 'shop', more: 'more' }[view] || '';
+  const tab = { '': 'list', tyden: 'tyden', new: 'new', foto: 'new', shop: 'shop', more: 'more' }[view] || '';
   $$('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
 
   const session = await store.session();
@@ -405,6 +431,7 @@ async function route() {
     else if (view === 'foto') await renderFoto();
     else if (view === 'shop') await renderShop();
     else if (view === 'doma') await renderDoma();
+    else if (view === 'tyden') await renderPlan(id ? decodeURIComponent(id) : null);
     else if (view === 'more') await renderMore();
     else await renderList();
   } catch (e) {
@@ -577,6 +604,7 @@ async function renderDetail(id) {
 
     <div class="row">
       <a class="btn" href="#/edit/${encodeURIComponent(r.id)}">${ICON.edit} Upravit</a>
+      <a class="btn" href="#/tyden/${encodeURIComponent(r.id)}">${ICON.calendar} Naplánovat</a>
       ${'wakeLock' in navigator ? `<button class="btn" id="wake">${ICON.sun} Nevypínat displej</button>` : ''}
     </div>
     <div class="sticky-action"><button class="btn primary" id="addSel" hidden></button></div>`;
@@ -973,6 +1001,188 @@ async function renderFoto() {
       btn.textContent = 'Uložit k přepisu';
     }
   };
+}
+
+/* ================= Týden: jídelníček ================= */
+
+const DAY_NAMES = ['Pondělí', 'Úterý', 'Středa', 'Čtvrtek', 'Pátek', 'Sobota', 'Neděle'];
+const MEALS = [['obed', 'Oběd'], ['vecere', 'Večeře']];
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const parseDay = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const mondayOf = (d) => addDays(new Date(d.getFullYear(), d.getMonth(), d.getDate()), -((d.getDay() + 6) % 7));
+const shortDate = (d) => `${d.getDate()}. ${d.getMonth() + 1}.`;
+
+async function renderPlan(preselectRecipeId) {
+  setTitle('Jídelníček');
+  const recipes = await loadRecipes();
+  if (!state.week) state.week = mondayOf(new Date());
+  const today = isoDay(new Date());
+  let plan = [];
+
+  const load = async () => {
+    // O týden dřív kvůli jídlům „na více dní“, která začala minulý týden
+    plan = await store.listPlan(isoDay(addDays(state.week, -14)), isoDay(addDays(state.week, 6)));
+  };
+
+  // Které položky jídelníčku připadají na daný den (i pokračování vícedenních jídel)
+  const entriesFor = (dayIso) => plan.filter((p) => {
+    const offset = Math.round((parseDay(dayIso) - parseDay(p.day)) / 864e5);
+    return offset >= 0 && offset < p.days;
+  }).map((p) => ({ ...p, dayNo: Math.round((parseDay(dayIso) - parseDay(p.day)) / 864e5) + 1 }));
+
+  const draw = () => {
+    const end = addDays(state.week, 6);
+    const isThisWeek = isoDay(state.week) === isoDay(mondayOf(new Date()));
+    const weekEntries = plan.filter((p) => p.day >= isoDay(state.week) && p.day <= isoDay(end));
+    const withRecipe = weekEntries.filter((p) => recipes.some((r) => r.id === p.recipe_id));
+    app.innerHTML = `
+      <div class="week-nav">
+        <button class="icon-btn" id="prevW" aria-label="Předchozí týden"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <div><b>${shortDate(state.week)} – ${shortDate(end)}</b><small>${isThisWeek ? 'tento týden' : `<button class="link-btn" id="thisW">zpět na tento týden</button>`}</small></div>
+        <button class="icon-btn" id="nextW" aria-label="Další týden"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+      </div>
+      ${withRecipe.length ? `<button class="btn block" id="shopWeek" style="margin-bottom:12px">${ICON.cart} Nakoupit suroviny na týden</button>` : ''}
+      <div class="week">${DAY_NAMES.map((name, i) => {
+        const d = addDays(state.week, i);
+        const di = isoDay(d);
+        const items = entriesFor(di);
+        return `<div class="day ${di === today ? 'today' : ''}">
+          <div class="day-head"><b>${name}</b> <span>${shortDate(d)}</span>
+            <button class="link-btn" data-add="${di}">+ Přidat</button></div>
+          ${MEALS.map(([key, label]) => {
+            const list = items.filter((p) => p.meal === key);
+            if (!list.length) return '';
+            return `<div class="meal"><span class="meal-label">${label}</span><div class="meal-items">${list.map((p) => {
+              const r = recipes.find((x) => x.id === p.recipe_id);
+              const titleHtml = r ? `<a href="#/r/${encodeURIComponent(r.id)}">${esc(r.title)}</a>` : `<span>${esc(p.title)}</span>`;
+              return `<div class="plan-item ${p.dayNo > 1 ? 'cont' : ''}">
+                ${titleHtml}
+                ${r ? '' : '<span class="idea">💡 nápad</span>'}
+                ${p.days > 1 ? `<span class="days">${p.dayNo}. den z ${p.days}</span>` : ''}
+                ${p.note ? `<small>${esc(p.note)}</small>` : ''}
+                <button class="del" data-del="${esc(p.id)}" aria-label="Odebrat">${ICON.x}</button>
+              </div>`;
+            }).join('')}</div></div>`;
+          }).join('') || '<div class="day-empty">nic naplánováno</div>'}
+        </div>`;
+      }).join('')}</div>`;
+
+    $('#prevW').onclick = async () => { state.week = addDays(state.week, -7); await load(); draw(); };
+    $('#nextW').onclick = async () => { state.week = addDays(state.week, 7); await load(); draw(); };
+    const tw = $('#thisW');
+    if (tw) tw.onclick = async () => { state.week = mondayOf(new Date()); await load(); draw(); };
+    $$('[data-add]').forEach((b) => (b.onclick = () => openAdd(b.dataset.add)));
+    $$('[data-del]').forEach((b) => (b.onclick = async () => {
+      const p = plan.find((x) => x.id === b.dataset.del);
+      if (!confirm(`Odebrat „${p.title}“ z jídelníčku?`)) return;
+      try { await store.deletePlan(p.id); await load(); draw(); } catch (e) { toast('Chyba: ' + e.message); }
+    }));
+    const sw = $('#shopWeek');
+    if (sw) sw.onclick = () => shopWeek(withRecipe);
+  };
+
+  const shopWeek = async (entries) => {
+    await loadShopping();
+    const have = new Set(state.shopping.filter((s) => !s.checked).map((s) => norm(s.name)));
+    const items = [];
+    for (const p of entries) {
+      const r = recipes.find((x) => x.id === p.recipe_id);
+      for (const ing of r.ingredients) {
+        if (ing.section || have.has(norm(ing.name))) continue;
+        have.add(norm(ing.name));
+        items.push({ name: ing.name, amount: ingredientAmount(ing) || null, recipe_id: r.id, recipe_title: r.title });
+      }
+    }
+    if (!items.length) { toast('Všechno už v nákupním seznamu je'); return; }
+    if (!confirm(`Přidat do nákupu ${items.length} ${plural(items.length, 'surovinu', 'suroviny', 'surovin')} z ${entries.length} ${plural(entries.length, 'jídla', 'jídel', 'jídel')}? Co doma máte, pak v nákupu jen smažete.`)) return;
+    try {
+      await store.addShopping(items);
+      await loadShopping();
+      toast(`Do nákupu přidáno: ${items.length} ${plural(items.length, 'položka', 'položky', 'položek')}`);
+    } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
+  };
+
+  // Spodní panel pro přidání jídla: z receptů, nebo jen nápad
+  const openAdd = (dayIso, recipeId = null) => {
+    let meal = 'obed', days = 1, mode = 'recept', chosen = recipeId, q = '';
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet-wrap';
+    document.body.appendChild(sheet);
+    const close = () => sheet.remove();
+
+    const drawSheet = () => {
+      const words = norm(q).split(/\s+/).filter(Boolean);
+      const list = recipes.filter((r) => matches(r, words)).slice(0, 40);
+      sheet.innerHTML = `<div class="sheet form">
+        <div class="sheet-head"><b>Přidat do jídelníčku</b><button class="icon-btn" id="shClose" aria-label="Zavřít">${ICON.x}</button></div>
+        <label>Den</label>
+        <select class="field" id="shDay">${DAY_NAMES.map((n, i) => {
+          const di = isoDay(addDays(state.week, i));
+          return `<option value="${di}" ${di === dayIso ? 'selected' : ''}>${n} ${shortDate(addDays(state.week, i))}</option>`;
+        }).join('')}</select>
+        <div class="grid2">
+          <div><label>Jídlo</label><div class="seg">${MEALS.map(([k, l]) => `<button type="button" class="chip ${meal === k ? 'on' : ''}" data-meal="${k}">${l}</button>`).join('')}</div></div>
+          <div><label>Na kolik dní</label><div class="servings"><button type="button" id="dMinus">−</button><span>${days} ${plural(days, 'den', 'dny', 'dní')}</span><button type="button" id="dPlus">+</button></div></div>
+        </div>
+        <div class="seg tabs">
+          <button type="button" class="chip ${mode === 'recept' ? 'on' : ''}" data-mode="recept">📖 Z receptů</button>
+          <button type="button" class="chip ${mode === 'napad' ? 'on' : ''}" data-mode="napad">💡 Nápad</button>
+        </div>
+        ${mode === 'recept' ? `
+          <input type="text" id="shQ" placeholder="Hledat recept…" value="${esc(q)}" autocomplete="off">
+          <div class="pick-list">${list.map((r) => `<button type="button" class="pick ${chosen === r.id ? 'on' : ''}" data-r="${esc(r.id)}">${esc(r.title)}<small>${esc(r.categories.join(', '))}</small></button>`).join('') || '<div class="day-empty">Nic nenalezeno</div>'}</div>`
+        : `
+          <input type="text" id="shIdea" placeholder="např. Zkusit thajské kari" autocomplete="off">
+          <input type="text" id="shNote" placeholder="poznámka, odkaz… (nepovinné)" autocomplete="off" style="margin-top:8px">`}
+        <div class="row"><button type="button" class="btn primary" id="shSave">Přidat</button></div>
+      </div>`;
+
+      $('#shClose', sheet).onclick = close;
+      $('#shDay', sheet).onchange = (e) => { dayIso = e.target.value; };
+      $$('[data-meal]', sheet).forEach((b) => (b.onclick = () => { meal = b.dataset.meal; drawSheet(); }));
+      $$('[data-mode]', sheet).forEach((b) => (b.onclick = () => { mode = b.dataset.mode; drawSheet(); }));
+      $('#dMinus', sheet).onclick = () => { if (days > 1) { days--; drawSheet(); } };
+      $('#dPlus', sheet).onclick = () => { if (days < 14) { days++; drawSheet(); } };
+      const qi = $('#shQ', sheet);
+      if (qi) qi.oninput = (e) => {
+        q = e.target.value;
+        const pos = e.target.selectionStart;
+        drawSheet();
+        const n = $('#shQ', sheet); n.focus(); n.setSelectionRange(pos, pos);
+      };
+      $$('[data-r]', sheet).forEach((b) => (b.onclick = () => { chosen = b.dataset.r; drawSheet(); }));
+      $('#shSave', sheet).onclick = async () => {
+        let item;
+        if (mode === 'recept') {
+          const r = recipes.find((x) => x.id === chosen);
+          if (!r) { toast('Vyberte recept'); return; }
+          item = { day: dayIso, meal, days, recipe_id: r.id, title: r.title };
+        } else {
+          const t = $('#shIdea', sheet).value.trim();
+          if (!t) { toast('Napište, co chcete zkusit'); return; }
+          item = { day: dayIso, meal, days, recipe_id: null, title: t, note: $('#shNote', sheet).value.trim() || null };
+        }
+        try {
+          await store.addPlan(item);
+          close();
+          await load();
+          draw();
+          toast('Přidáno do jídelníčku');
+        } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
+      };
+    };
+    sheet.onclick = (e) => { if (e.target === sheet) close(); };
+    drawSheet();
+  };
+
+  await load();
+  draw();
+  if (preselectRecipeId) {
+    history.replaceState(null, '', '#/tyden');
+    const todayInWeek = today >= isoDay(state.week) && today <= isoDay(addDays(state.week, 6)) ? today : isoDay(state.week);
+    openAdd(todayInWeek, preselectRecipeId);
+  }
 }
 
 /* ================= Nákupní seznam ================= */

@@ -81,3 +81,29 @@ create policy "prihlaseni_fotky" on storage.objects
   for all to authenticated
   using (bucket_id = 'recipe-photos')
   with check (bucket_id = 'recipe-photos');
+
+-- Jídelníček: co se kdy vaří (z receptu nebo jen nápad) a na kolik dní ----
+create table if not exists public.meal_plan (
+  id          uuid primary key default gen_random_uuid(),
+  day         date not null,
+  meal        text not null default 'obed',   -- 'obed' | 'vecere'
+  days        integer not null default 1 check (days between 1 and 14),
+  recipe_id   uuid references public.recipes(id) on delete set null,
+  title       text not null,
+  note        text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists meal_plan_day on public.meal_plan (day);
+
+grant select, insert, update, delete on public.meal_plan to authenticated;
+revoke all on public.meal_plan from anon;
+alter table public.meal_plan enable row level security;
+drop policy if exists "prihlaseni_jidelnicek" on public.meal_plan;
+create policy "prihlaseni_jidelnicek" on public.meal_plan
+  for all to authenticated using (true) with check (true);
+
+do $$
+begin
+  alter publication supabase_realtime add table public.meal_plan;
+exception when duplicate_object then null;
+end $$;

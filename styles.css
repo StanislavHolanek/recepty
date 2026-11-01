@@ -99,7 +99,7 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
 /* Spodní lišta */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--brand);
@@ -334,3 +334,46 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
 
 /* Formuláře s tlačítkem Uložit připnutým dole – místo, aby nezakrylo poslední pole */
 .form.has-sticky { padding-bottom: 76px; }
+
+/* Týden – jídelníček */
+.week-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; text-align: center; }
+.week-nav b { display: block; font-size: 1.1rem; }
+.week-nav small { color: var(--muted); }
+.week-nav .icon-btn { margin: 0; color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: 50%; width: 40px; height: 40px; }
+.week { display: grid; gap: 10px; }
+.day { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; box-shadow: var(--shadow); }
+.day.today { border: 2px solid var(--gold); }
+.day-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.day-head b { color: var(--accent); }
+.day-head span { color: var(--muted); font-size: .85rem; flex: 1; }
+.day-empty { color: var(--muted); font-size: .85rem; padding: 2px 0; }
+.meal { display: flex; gap: 10px; padding: 6px 0; border-top: 1px dashed var(--line); }
+.meal:first-of-type { border-top: 0; }
+.meal-label { width: 58px; flex: none; font-size: .78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; padding-top: 3px; }
+.meal-items { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.plan-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; position: relative; padding-right: 28px; }
+.plan-item a, .plan-item > span:first-child { font-weight: 700; color: var(--text); text-decoration: none; }
+.plan-item.cont a, .plan-item.cont > span:first-child { font-weight: 600; color: var(--muted); }
+.plan-item .idea, .plan-item .days { font-size: .72rem; font-weight: 700; padding: 1px 8px; border-radius: 99px; }
+.plan-item .idea { background: var(--sage-soft); color: var(--sage); }
+.plan-item .days { background: var(--accent-soft); color: var(--accent); }
+.plan-item small { width: 100%; color: var(--muted); }
+.plan-item .del { position: absolute; right: 0; top: 0; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px; }
+.plan-item .del svg { width: 16px; height: 16px; }
+
+/* Spodní panel (přidat do jídelníčku) */
+.sheet-wrap { position: fixed; inset: 0; z-index: 35; background: rgba(30, 5, 12, .45); display: flex; align-items: flex-end; justify-content: center; }
+.sheet {
+  width: 100%; max-width: 760px; max-height: 88vh; overflow-y: auto; background: var(--bg);
+  border-radius: 20px 20px 0 0; padding: 14px 16px calc(16px + env(safe-area-inset-bottom)); border-top: 4px solid var(--brand);
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; }
+.sheet-head b { font-size: 1.1rem; color: var(--accent); }
+.sheet-head .icon-btn { margin: 0; }
+.sheet select.field { appearance: auto; }
+.seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.seg.tabs { margin: 16px 0 10px; }
+.pick-list { display: grid; gap: 6px; margin-top: 8px; max-height: 38vh; overflow-y: auto; }
+.pick { text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; cursor: pointer; font-weight: 600; }
+.pick small { display: block; color: var(--muted); font-weight: 400; font-size: .78rem; }
+.pick.on { border: 2px solid var(--brand); background: var(--accent-soft); }
