@@ -41,7 +41,7 @@ function flowerThumb(title) {
   return `<div class="thumb" style="background:${bg}">${flower(petal, center)}</div>`;
 }
 
-const bouquet = () => `<div class="bouquet">${flower('#f29fb5', '#f4c05a')}${flower('#d77fae', '#ffe08a', 'big')}${flower('#b79ce0', '#f4c05a')}</div>`;
+const bouquet = () => `<div class="bouquet">${flower('#d98a9c', '#f0b84a')}${flower('#800020', '#f0b84a', 'big')}${flower('#c9a3d6', '#f0b84a')}</div>`;
 const empty = (title, text) => `<div class="empty">${bouquet()}<b>${title}</b>${text}</div>`;
 const h3 = (text) => `<h3>${flower('var(--petal)', 'var(--flower-center)', 'mini')}${text}`;
 
