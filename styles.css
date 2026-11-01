@@ -1,10 +1,13 @@
 :root {
-  --bg: #fcf5f6;
+  --brand: #800020;          /* bordó RGB 128, 0, 32 – lišta, tlačítka, vybrané volby */
+  --brand-dark: #5e0018;
+  --on-brand: #ffffff;
+  --bg: #fbf6f4;
   --surface: #ffffff;
-  --surface-2: #f8e8ec;
+  --surface-2: #f6eaec;
   --text: #3a2228;
   --muted: #86656d;
-  --line: #efdbe0;
+  --line: #ecdcdf;
   --accent: #800020;
   --accent-soft: #f6e1e7;
   --accent-text: #ffffff;
@@ -24,15 +27,15 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #221417;
-    --surface: #2e1c20;
-    --surface-2: #3b252a;
+    --bg: #1d0d12;
+    --surface: #2b141b;
+    --surface-2: #3a1c25;
     --text: #f7e9ec;
-    --muted: #c4a2aa;
-    --line: #4b3036;
-    --accent: #e8899c;
-    --accent-soft: #4f1f2b;
-    --accent-text: #221417;
+    --muted: #c9a3ad;
+    --line: #4d2733;
+    --accent: #f0a9b8;
+    --accent-soft: #4a1726;
+    --accent-text: #1d0d12;
     --sage: #9cc8a5;
     --sage-soft: #2f3d33;
     --ok: #9cc8a5;
@@ -63,10 +66,12 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; gap: 8px;
   padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--line);
+  background: var(--brand);
+  color: var(--on-brand);
+  box-shadow: 0 2px 10px rgba(80, 0, 20, .25);
 }
+.topbar .mode-badge { background: rgba(255, 255, 255, .18); color: var(--on-brand); }
+.topbar .icon-btn:active { background: rgba(255, 255, 255, .15); }
 .topbar h1 { font-size: 1.15rem; font-weight: 800; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar > .flower { width: 26px; height: 26px; flex: none; }
 .mode-badge { font-size: .7rem; font-weight: 700; background: var(--accent-soft); color: var(--accent); padding: 2px 8px; border-radius: 99px; }
@@ -108,7 +113,7 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
 .tabbar .count {
   position: absolute; top: 6px; left: calc(50% + 6px);
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
-  background: var(--accent); color: var(--accent-text); font-size: .68rem; line-height: 18px; text-align: center;
+  background: var(--brand); color: var(--on-brand); font-size: .68rem; line-height: 18px; text-align: center;
 }
 
 /* Hledání a filtry */
@@ -125,7 +130,7 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
   flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 99px;
   padding: 6px 14px; font-size: .9rem; cursor: pointer; white-space: nowrap;
 }
-.chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.chip.on { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
 .result-info { color: var(--muted); font-size: .85rem; margin: 10px 2px 8px; }
 
 .chips.wrap { flex-wrap: wrap; overflow: visible; margin: 0; padding: 4px 0; }
@@ -136,14 +141,14 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
 /* Co je doma */
 .doma-link {
   display: flex; align-items: center; gap: 12px; margin: 10px 0 2px; padding: 12px 14px;
-  background: linear-gradient(135deg, var(--sage-soft), var(--accent-soft)); border-radius: var(--radius);
-  color: var(--text); text-decoration: none; border: 1px solid var(--line);
+  background: linear-gradient(135deg, var(--brand), #a8324f); border-radius: var(--radius); box-shadow: 0 6px 18px rgba(128, 0, 32, .25);
+  color: var(--on-brand); text-decoration: none;
 }
 .doma-link .doma-ico { font-size: 1.7rem; }
 .doma-link b { display: block; font-weight: 800; }
-.doma-link small { color: var(--muted); font-size: .82rem; }
+.doma-link small { color: rgba(255, 255, 255, .8); font-size: .82rem; }
 .doma-link > span:nth-child(2) { flex: 1; }
-.doma-link svg { color: var(--accent); flex: none; }
+.doma-link svg { color: var(--on-brand); flex: none; }
 .haves { margin-top: 4px; }
 .check { display: flex; align-items: center; gap: 8px; margin: 12px 2px 4px; font-size: .9rem; color: var(--muted); }
 .check input { width: 18px; height: 18px; accent-color: var(--accent); }
@@ -199,7 +204,7 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
 .ingredients .box { width: 22px; height: 22px; border: 2px solid var(--line); border-radius: 6px; flex: none; display: grid; place-items: center; }
 .ingredients .box svg { width: 16px; height: 16px; opacity: 0; stroke-width: 3; }
 .ingredients li.sel { background: var(--accent-soft); }
-.ingredients li.sel .box { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.ingredients li.sel .box { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
 .ingredients li.sel .box svg { opacity: 1; }
 .ingredients .qty { font-weight: 650; white-space: nowrap; }
 .ingredients .tag-in { margin-left: auto; font-size: .72rem; color: var(--ok); white-space: nowrap; }
@@ -228,7 +233,8 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
   border-radius: 12px; padding: 11px 16px; font-weight: 600; cursor: pointer; text-decoration: none;
 }
 .btn svg { width: 20px; height: 20px; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.btn.primary:active { background: var(--brand-dark); }
 .btn.danger { color: var(--danger); }
 .btn.block { width: 100%; }
 .btn.small { padding: 6px 12px; font-size: .88rem; }
