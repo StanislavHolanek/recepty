@@ -31,8 +31,8 @@ function flower(petal = 'var(--petal)', center = 'var(--flower-center)', cls = '
 
 // Pastelové kombinace pro recepty bez fotky (barva podle názvu)
 const PASTELS = [
-  ['#fbe1e8', '#e98aa7', '#f4c05a'], ['#ece3f8', '#b79ce0', '#f4c05a'], ['#e1f0e5', '#8cc29c', '#f29fb5'],
-  ['#fdebd9', '#f0a46c', '#c95b82'], ['#e2edf8', '#8fb6e0', '#f4c05a'], ['#fbe6f0', '#d77fae', '#ffe08a'],
+  ['#f5e1e3', '#800020', '#d4a24c'], ['#f6ead3', '#c58a2e', '#800020'], ['#f8e6e6', '#d98a9c', '#d4a24c'],
+  ['#efe0e3', '#a8324f', '#e3bf7a'], ['#faf0e2', '#d4a24c', '#a8324f'], ['#f6e4e8', '#b5546d', '#d4a24c'],
 ];
 function flowerThumb(title) {
   let h = 0;
@@ -41,7 +41,7 @@ function flowerThumb(title) {
   return `<div class="thumb" style="background:${bg}">${flower(petal, center)}</div>`;
 }
 
-const bouquet = () => `<div class="bouquet">${flower('#d98a9c', '#f0b84a')}${flower('#800020', '#f0b84a', 'big')}${flower('#c9a3d6', '#f0b84a')}</div>`;
+const bouquet = () => `<div class="bouquet">${flower('#d98a9c', '#d4a24c')}${flower('#800020', '#d4a24c', 'big')}${flower('#e3bf7a', '#800020')}</div>`;
 const empty = (title, text) => `<div class="empty">${bouquet()}<b>${title}</b>${text}</div>`;
 const h3 = (text) => `<h3>${flower('var(--petal)', 'var(--flower-center)', 'mini')}${text}`;
 
