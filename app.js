@@ -605,6 +605,7 @@ async function renderDetail(id) {
     <div class="row">
       <a class="btn" href="#/edit/${encodeURIComponent(r.id)}">${ICON.edit} Upravit</a>
       <a class="btn" href="#/tyden/${encodeURIComponent(r.id)}">${ICON.calendar} Naplánovat</a>
+      <button class="btn" id="shareBtn">${ICON.share} Sdílet</button>
       ${'wakeLock' in navigator ? `<button class="btn" id="wake">${ICON.sun} Nevypínat displej</button>` : ''}
     </div>
     <div class="sticky-action"><button class="btn primary" id="addSel" hidden></button></div>`;
@@ -659,6 +660,9 @@ async function renderDetail(id) {
 
   $$('.photos img').forEach((img) => (img.onclick = () => openLightbox(img.src)));
 
+  // Sdílí se v počtu porcí, který je právě nastavený
+  $('#shareBtn').onclick = () => openShare(r, servings, urls);
+
   const wake = $('#wake');
   if (wake) wake.onclick = async () => {
     if (state.wakeLock) { releaseWakeLock(); wake.classList.remove('on'); return; }
@@ -667,6 +671,73 @@ async function renderDetail(id) {
       wake.classList.add('on');
       toast('Displej zůstane rozsvícený, dokud recept neopustíte');
     } catch { toast('Telefon to nepovolil'); }
+  };
+}
+
+/* ================= Sdílení receptu ================= */
+
+// Recept jako čitelný text do zprávy (WhatsApp, Messenger, e-mail…)
+function recipeText(r, servings) {
+  const factor = r.servings && servings ? servings / r.servings : 1;
+  const meta = [r.categories.join(', '), formatMinutes(r.time_minutes),
+    servings ? `${servings} ${plural(servings, 'porce', 'porce', 'porcí')}` : ''].filter(Boolean).join(' · ');
+  const out = [`🌸 ${r.title.toUpperCase()}`];
+  if (meta) out.push(meta);
+  if (r.ingredients.length) {
+    out.push('', '🛒 INGREDIENCE');
+    for (const ing of r.ingredients) {
+      if (ing.section) out.push(...(out.at(-1) === '🛒 INGREDIENCE' ? [] : ['']), `${ing.section}:`);
+      else out.push(`• ${[ingredientAmount(ing, factor), ing.name].filter(Boolean).join(' ')}`);
+    }
+  }
+  if (r.steps.length) {
+    out.push('', '👩‍🍳 POSTUP');
+    r.steps.forEach((s, i) => out.push(`${i + 1}. ${s}`));
+  }
+  if (r.notes) out.push('', `📝 ${r.notes}`);
+  if (r.status === 'ceka' && !r.ingredients.length) out.push('', '(recept je na fotce)');
+  out.push('', '— z Martinčiny kuchařky 🌸');
+  return out.join('\n');
+}
+
+async function openShare(r, servings, urls) {
+  const text = recipeText(r, servings);
+  const firstPhoto = r.photos[0] && urls[r.photos[0]];
+  let photoFile = null;
+  if (firstPhoto && navigator.canShare) {
+    try {
+      const blob = await (await fetch(firstPhoto)).blob();
+      const f = new File([blob], `${r.title}.jpg`, { type: blob.type || 'image/jpeg' });
+      if (navigator.canShare({ files: [f] })) photoFile = f;
+    } catch { /* bez fotky */ }
+  }
+
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet-wrap';
+  sheet.innerHTML = `<div class="sheet">
+    <div class="sheet-head"><b>Sdílet recept</b><button class="icon-btn" data-act="close" aria-label="Zavřít">${ICON.x}</button></div>
+    <pre class="share-preview">${esc(text)}</pre>
+    <div class="share-grid">
+      ${navigator.share ? `<button class="btn primary" data-act="native">${ICON.share} Poslat…<small>Messenger, WhatsApp, SMS…</small></button>` : ''}
+      ${photoFile ? `<button class="btn" data-act="photo">${ICON.image} Poslat s fotkou</button>` : ''}
+      <a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(text)}">💬 WhatsApp</a>
+      <a class="btn" href="mailto:?subject=${encodeURIComponent('Recept: ' + r.title)}&body=${encodeURIComponent(text)}">✉️ E-mail</a>
+      <button class="btn" data-act="copy">📋 Kopírovat text</button>
+    </div>
+  </div>`;
+  document.body.appendChild(sheet);
+  const close = () => sheet.remove();
+  sheet.onclick = async (e) => {
+    if (e.target === sheet) return close();
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    try {
+      if (act === 'close') close();
+      if (act === 'native') { await navigator.share({ title: r.title, text }); close(); }
+      if (act === 'photo') { await navigator.share({ title: r.title, text, files: [photoFile] }); close(); }
+      if (act === 'copy') { await navigator.clipboard.writeText(text); toast('Recept zkopírován – vložte ho do zprávy'); }
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('Sdílení se nepovedlo: ' + err.message);
+    }
   };
 }
 
