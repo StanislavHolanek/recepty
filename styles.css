@@ -388,3 +388,10 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
 .share-opts .chip svg { width: 18px; height: 18px; }
 .share-card { display: block; width: 100%; border-radius: 12px; margin-top: 10px; border: 1px solid var(--line); }
 .srv-info { font-size: .85rem; font-weight: 700; color: var(--accent); background: var(--accent-soft); padding: 3px 10px; border-radius: 99px; }
+
+/* Úprava položky v nákupu */
+.shop-list li.editing { display: block; border: 2px solid var(--brand); }
+.edit-item .edit-fields { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; }
+.edit-item .quick-amt { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.edit-item .quick-amt .chip { padding: 4px 12px; font-size: .82rem; }
+.edit-item .row { margin-top: 10px; }

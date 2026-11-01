@@ -1407,10 +1407,30 @@ async function renderShop() {
     </form>
     <div id="shopBody"><div class="loading">Načítám…</div></div>`;
 
-  const item = (i) => `
+  // Položka, kterou právě upravujeme (název a množství – třeba „1 balení“ místo „2 ks“)
+  let editing = null;
+
+  const item = (i) => i.id === editing ? `
+    <li class="editing" data-id="${esc(i.id)}">
+      <form class="edit-item form" data-form="${esc(i.id)}">
+        <div class="edit-fields">
+          <input type="text" name="name" value="${esc(i.name)}" placeholder="Co koupit" aria-label="Název">
+          <input type="text" name="amount" value="${esc(i.amount || '')}" placeholder="množství" aria-label="Množství">
+        </div>
+        <div class="quick-amt">
+          <button type="button" class="chip" data-amt="">bez množství</button>
+          <button type="button" class="chip" data-amt="1 balení">1 balení</button>
+          <button type="button" class="chip" data-amt="1 ks">1 ks</button>
+        </div>
+        <div class="row">
+          <button type="button" class="btn" data-act="cancel">Zrušit</button>
+          <button type="submit" class="btn primary">Uložit</button>
+        </div>
+      </form>
+    </li>` : `
     <li class="${i.checked ? 'checked' : ''}" data-id="${esc(i.id)}">
       <button class="chk" data-act="toggle" aria-label="Odškrtnout">${ICON.check}</button>
-      <div class="txt" data-act="toggle">
+      <div class="txt" data-act="${i.checked ? 'toggle' : 'edit'}">
         <span class="nm">${esc(i.name)}</span>${i.amount ? ` <span class="amt">${esc(i.amount)}</span>` : ''}
         ${i.recipe_title ? `<span class="from">${esc(i.recipe_title)}</span>` : ''}
       </div>
@@ -1426,6 +1446,7 @@ async function renderShop() {
       ? empty('Seznam je prázdný', 'Přidejte položku nahoře, nebo v receptu ťukněte na ingredience, které chybí.')
       : `${open.length ? `<div class="group-title"><span>Koupit (${open.length})</span>
             ${navigator.share ? `<button class="link-btn" id="shareBtn">Poslat seznam</button>` : ''}</div>
+          <p class="hint">Ťukněte na položku a upravte množství (třeba „1 balení“), nebo ho smažte.</p>
           <ul class="shop-list">${open.map(item).join('')}</ul>` : empty('Vše nakoupeno', 'Hezky jste to zvládli.')}
          ${done.length ? `<div class="group-title"><span>V košíku (${done.length})</span>
             <button class="link-btn" id="clearDone">Smazat odškrtnuté</button></div>
@@ -1442,6 +1463,21 @@ async function renderShop() {
       draw();
       try { await store.deleteShopping(ids); } catch (e) { toast('Chyba: ' + e.message); }
     };
+    const form = $('[data-form]');
+    if (form) {
+      const fName = form.elements.namedItem('name'), fAmt = form.elements.namedItem('amount');
+      fAmt.focus();
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const it = state.shopping.find((i) => i.id === form.dataset.form);
+        const patch = { name: fName.value.trim() || it.name, amount: fAmt.value.trim() || null };
+        Object.assign(it, patch);
+        editing = null;
+        draw();
+        try { await store.updateShopping(it.id, patch); } catch (err) { toast('Chyba: ' + err.message); }
+      };
+      $$('[data-amt]', form).forEach((b) => (b.onclick = () => { fAmt.value = b.dataset.amt; form.requestSubmit(); }));
+    }
   };
 
   $('#shopBody').onclick = async (e) => {
@@ -1449,6 +1485,8 @@ async function renderShop() {
     const id = e.target.closest('li')?.dataset.id;
     if (!act || !id) return;
     const it = state.shopping.find((i) => i.id === id);
+    if (act === 'edit') { editing = id; draw(); return; }
+    if (act === 'cancel') { editing = null; draw(); return; }
     try {
       if (act === 'toggle') {
         it.checked = !it.checked;
@@ -1476,7 +1514,8 @@ async function renderShop() {
     } catch (err) { toast('Nepodařilo se přidat: ' + err.message); }
   };
 
-  store.onShoppingChange(async () => { await loadShopping(); draw(); });
+  // Změny z druhého telefonu nepřekreslují seznam, dokud se položka upravuje
+  store.onShoppingChange(async () => { await loadShopping(); if (!editing) draw(); });
   await loadShopping();
   draw();
 }
