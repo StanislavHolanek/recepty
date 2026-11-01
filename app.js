@@ -18,6 +18,7 @@ const ICON = {
   sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   share: '<svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M5 13v7h14v-7"/></svg>',
   camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.5"/></svg>',
+  image: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M20 16l-5-5-8 8"/></svg>',
 };
 
 const MAX_PHOTOS = 3;
@@ -40,6 +41,11 @@ function flowerThumb(title) {
   const [bg, petal, center] = PASTELS[h % PASTELS.length];
   return `<div class="thumb" style="background:${bg}">${flower(petal, center)}</div>`;
 }
+
+// Dvě tlačítka na fotky: „Vyfotit“ otevře rovnou fotoaparát, „Z galerie“ vybere uložené fotky
+const photoPickers = () => `
+  <label class="photo-add">${ICON.camera}<span>Vyfotit</span><input type="file" accept="image/*" capture="environment"></label>
+  <label class="photo-add">${ICON.image}<span>Z galerie</span><input type="file" accept="image/*" multiple></label>`;
 
 const bouquet = () => `<div class="bouquet">${flower('#d98a9c', '#d4a24c')}${flower('#800020', '#d4a24c', 'big')}${flower('#e3bf7a', '#800020')}</div>`;
 const empty = (title, text) => `<div class="empty">${bouquet()}<b>${title}</b>${text}</div>`;
@@ -713,16 +719,15 @@ async function renderEdit(id) {
       keptPhotos.map((p, i) => `<div class="ph"><img src="${esc(urls[p] || '')}" alt=""><button type="button" data-k="${i}" aria-label="Odebrat">×</button></div>`).join('') +
       newPhotos.map((p, i) => `<div class="ph"><img src="${esc(p.url)}" alt=""><button type="button" data-n="${i}" aria-label="Odebrat">×</button></div>`).join('') +
       (keptPhotos.length + newPhotos.length < MAX_PHOTOS
-        ? `<label class="photo-add">${ICON.camera}<span>Přidat fotku</span><input type="file" accept="image/*" multiple id="f-photo"></label>`
+        ? photoPickers()
         : '');
-    const input = $('#f-photo');
-    if (input) input.onchange = (e) => {
+    $$('#phs input[type=file]').forEach((input) => (input.onchange = (e) => {
       const free = MAX_PHOTOS - keptPhotos.length - newPhotos.length;
       const files = [...e.target.files];
       if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotky`);
       for (const file of files.slice(0, free)) newPhotos.push({ file, url: URL.createObjectURL(file) });
       drawPhotos();
-    };
+    }));
   };
   drawPhotos();
   $('#catPick').onclick = (e) => {
@@ -929,16 +934,15 @@ async function renderFoto() {
     $('#ffPhs').innerHTML =
       photos.map((p, i) => `<div class="ph"><img src="${esc(p.url)}" alt=""><button type="button" data-n="${i}" aria-label="Odebrat">×</button></div>`).join('') +
       (photos.length < MAX_PHOTOS
-        ? `<label class="photo-add">${ICON.camera}<span>${photos.length ? 'Další fotka' : 'Vyfotit'}</span><input type="file" accept="image/*" multiple id="ffPhoto"></label>`
+        ? photoPickers()
         : '');
-    const input = $('#ffPhoto');
-    if (input) input.onchange = (e) => {
+    $$('#ffPhs input[type=file]').forEach((input) => (input.onchange = (e) => {
       const files = [...e.target.files];
       const free = MAX_PHOTOS - photos.length;
       if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotky`);
       for (const file of files.slice(0, free)) photos.push({ file, url: URL.createObjectURL(file) });
       draw();
-    };
+    }));
   };
   draw();
   $('#ffPhs').onclick = (e) => {

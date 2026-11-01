@@ -285,6 +285,8 @@ svg.flower.mini { width: 20px; height: 20px; flex: none; }
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   color: var(--accent); cursor: pointer; text-align: center; font-size: .72rem; font-weight: 700; line-height: 1.2;
 }
+.form label.photo-add { display: flex; margin: 0; }  /* přebije obecné .form label */
+.photo-add svg { width: 26px; height: 26px; }
 .photo-add input { display: none; }
 
 /* Nákupní seznam */
