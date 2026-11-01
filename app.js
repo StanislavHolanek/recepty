@@ -551,7 +551,8 @@ async function renderDetail(id) {
   setTitle(r.title, true);
   loadShopping();
 
-  let servings = r.servings || null;
+  // Přepočet porcí je vypnutý (množství typu „2⅓ vejce“ nedávají smysl) – vše podle receptu
+  const servings = r.servings || null;
   const selected = new Set();
   const doneSteps = new Set();
   const urls = await store.photoUrls(r.photos);
@@ -567,7 +568,6 @@ async function renderDetail(id) {
           <span>${ing.qty != null ? `<span class="qty">${esc(ingredientAmount(ing, factor))}</span> ` : ''}${esc(ing.name)}</span>
           ${inList(ing) ? '<span class="tag-in">v nákupu</span>' : ''}
         </li>`).join('');
-    if (servings) $('#srv').textContent = `${servings} ${plural(servings, 'porce', 'porce', 'porcí')}`;
     const n = selected.size;
     $('#addSel').hidden = !n;
     $('#addSel').innerHTML = `${ICON.cart} Přidat do nákupu (${n})`;
@@ -589,7 +589,7 @@ async function renderDetail(id) {
 
     ${r.ingredients.length ? `<div class="section">
       ${h3('Ingredience')} <span class="spacer"></span>
-        ${servings ? `<span class="servings"><button id="minus" aria-label="Méně porcí">−</button><span id="srv"></span><button id="plus" aria-label="Více porcí">+</button></span>` : ''}
+        ${servings ? `<span class="srv-info">${servings} ${plural(servings, 'porce', 'porce', 'porcí')}</span>` : ''}
       </h3>
       <p class="hint">Ťukněte na to, co vám chybí, a přidejte to do nákupu. <button class="link-btn" id="selAll">Vybrat vše</button></p>
       <ul class="ingredients" id="ings"></ul>
@@ -624,10 +624,6 @@ async function renderDetail(id) {
       if (selected.size === all.length) selected.clear(); else all.forEach((i) => selected.add(i));
       drawIngredients();
     };
-    if (servings) {
-      $('#minus').onclick = () => { if (servings > 1) { servings--; drawIngredients(); } };
-      $('#plus').onclick = () => { servings++; drawIngredients(); };
-    }
     $('#addSel').onclick = async () => {
       const factor = r.servings && servings ? servings / r.servings : 1;
       const items = [...selected].sort((a, b) => a - b).map((i) => r.ingredients[i])
