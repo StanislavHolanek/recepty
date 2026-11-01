@@ -46,6 +46,9 @@ create trigger recipes_touch before update on public.recipes
   for each row execute function public.touch_updated_at();
 
 -- Přístup: jen přihlášení uživatelé (vy dva), nikdo jiný ------------------
+grant select, insert, update, delete on public.recipes, public.shopping_items to authenticated;
+revoke all on public.recipes, public.shopping_items from anon;
+
 alter table public.recipes        enable row level security;
 alter table public.shopping_items enable row level security;
 

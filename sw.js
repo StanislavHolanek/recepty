@@ -1,5 +1,5 @@
 // Offline režim: aplikace se načte i bez signálu. Při změně souborů zvyšte VERSION.
-const VERSION = 'recepty-v7';
+const VERSION = 'recepty-v8';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',

@@ -1,7 +1,7 @@
-// Nastavení připojení k Supabase.
-// Hodnoty najdete v Supabase → Project Settings → API (Project URL a anon / publishable key).
-// Dokud jsou prázdné, aplikace běží v DEMO režimu a data ukládá jen do tohoto prohlížeče.
+// Nastavení připojení k Supabase (projekt martinka-kucharka).
+// Publishable klíč je určený k veřejnému použití – data chrání přihlášení a pravidla v databázi.
+// Když jsou hodnoty prázdné, aplikace běží v DEMO režimu a data ukládá jen do tohoto prohlížeče.
 window.RECEPTY_CONFIG = {
-  supabaseUrl: '',
-  supabaseKey: '',
+  supabaseUrl: 'https://mjzqgecbnygjtpjdmlrt.supabase.co',
+  supabaseKey: 'sb_publishable_4NSYnWX4ijHGU8Z8n7zqZQ_LOcJS4BR',
 };
