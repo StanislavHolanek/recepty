@@ -383,6 +383,7 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
   white-space: pre-wrap; font: .82rem/1.45 var(--font); background: var(--surface); border: 1px solid var(--line);
   border-radius: 12px; padding: 10px 12px; max-height: 34vh; overflow-y: auto; margin: 10px 0 12px;
 }
-.share-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.share-grid .btn.primary { grid-column: 1 / -1; flex-wrap: wrap; }
-.share-grid .btn small { flex-basis: 100%; font-weight: 400; font-size: .75rem; opacity: .85; }
+.share-opts { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 2px; }
+.share-opts .chip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; font-weight: 700; }
+.share-opts .chip svg { width: 18px; height: 18px; }
+.share-card { display: block; width: 100%; border-radius: 12px; margin-top: 10px; border: 1px solid var(--line); }

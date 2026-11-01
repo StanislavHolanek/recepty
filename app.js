@@ -700,42 +700,186 @@ function recipeText(r, servings) {
   return out.join('\n');
 }
 
+// Zalomí text do řádků dané šířky (pro kreslení na plátno)
+function wrapLines(ctx, text, maxWidth) {
+  const lines = [];
+  let line = '';
+  for (const word of String(text).split(/\s+/)) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word; } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Recept jako jeden obrázek: nahoře hlavní fotka, pod ní ingredience a postup.
+// Messenger a další aplikace u sdílení s fotkou text často zahodí – v obrázku zůstane všechno.
+async function recipeCard(r, servings, photoBlob) {
+  await document.fonts?.ready;
+  const W = 1080, PAD = 70, TW = W - PAD * 2;
+  const factor = r.servings && servings ? servings / r.servings : 1;
+  const C = { brand: '#800020', text: '#3a1f25', muted: '#86656d', gold: '#d4a24c', bg: '#fbf5ee', card: '#fffdf9' };
+  const font = (size, weight = 400, family = 'Nunito, sans-serif') => `${weight} ${size}px ${family}`;
+
+  // Obsah jako seznam bloků; nejdřív se změří výška, pak se kreslí
+  const blocks = [];
+  const add = (text, size, weight, color, opts = {}) => blocks.push({ text, size, weight, color, ...opts });
+  add(r.title, 66, 800, C.brand, { gap: 0 });
+  const meta = [r.categories.join(', '), formatMinutes(r.time_minutes),
+    servings ? `${servings} ${plural(servings, 'porce', 'porce', 'porcí')}` : ''].filter(Boolean).join('  ·  ');
+  if (meta) add(meta, 34, 600, C.muted, { gap: 10 });
+  if (r.ingredients.length) {
+    add('Ingredience', 46, 800, C.brand, { gap: 50, rule: true });
+    for (const ing of r.ingredients) {
+      if (ing.section) add(ing.section.toUpperCase(), 32, 800, C.gold, { gap: 22 });
+      else add(`${ingredientAmount(ing, factor)} ${ing.name}`.trim(), 38, 400, C.text, { gap: 12, bullet: '•', amount: ingredientAmount(ing, factor) });
+    }
+  }
+  if (r.steps.length) {
+    add('Postup', 46, 800, C.brand, { gap: 50, rule: true });
+    r.steps.forEach((s, i) => add(s, 38, 400, C.text, { gap: 18, bullet: `${i + 1}.` }));
+  }
+  if (r.notes) add(r.notes, 34, 400, C.muted, { gap: 40, italic: true });
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const layout = () => {
+    let y = 0;
+    for (const b of blocks) {
+      ctx.font = font(b.size, b.weight);
+      const indent = b.bullet ? 56 : 0;
+      b.lines = wrapLines(ctx, b.text, TW - indent);
+      b.lineH = Math.round(b.size * 1.32);
+      y += b.gap + (b.rule ? 24 : 0);
+      b.y = y;
+      y += b.lines.length * b.lineH;
+    }
+    return y;
+  };
+
+  let photo = null;
+  if (photoBlob) { try { photo = await createImageBitmap(photoBlob); } catch { /* bez fotky */ } }
+  const photoH = photo ? 760 : 0;
+  const contentH = layout();
+  const footerH = 150;
+  canvas.width = W;
+  canvas.height = photoH + PAD + contentH + PAD + footerH;
+
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, W, canvas.height);
+  if (photo) {
+    // Fotka „cover“ – vyplní horní pruh a ořízne přebytek
+    const s = Math.max(W / photo.width, photoH / photo.height);
+    const sw = W / s, sh = photoH / s;
+    ctx.drawImage(photo, (photo.width - sw) / 2, (photo.height - sh) / 2, sw, sh, 0, 0, W, photoH);
+  }
+  ctx.fillStyle = C.brand;
+  ctx.fillRect(0, photoH, W, 14);
+  ctx.fillStyle = C.gold;
+  ctx.fillRect(0, photoH + 14, W, 5);
+
+  const top = photoH + PAD;
+  ctx.textBaseline = 'top';
+  for (const b of blocks) {
+    if (b.rule) { ctx.fillStyle = C.gold; ctx.fillRect(PAD, top + b.y - 18, 80, 5); }
+    ctx.font = (b.italic ? 'italic ' : '') + font(b.size, b.weight);
+    ctx.fillStyle = b.color;
+    const indent = b.bullet ? 56 : 0;
+    if (b.bullet) {
+      ctx.fillStyle = C.brand;
+      ctx.font = font(b.size, 800);
+      ctx.fillText(b.bullet, PAD, top + b.y);
+      ctx.font = font(b.size, b.weight);
+      ctx.fillStyle = b.color;
+    }
+    b.lines.forEach((line, i) => {
+      const x = PAD + indent, y = top + b.y + i * b.lineH;
+      // Množství u ingrediencí tučně
+      if (i === 0 && b.amount && line.startsWith(b.amount)) {
+        ctx.font = font(b.size, 800);
+        ctx.fillText(b.amount, x, y);
+        const w = ctx.measureText(b.amount + ' ').width;
+        ctx.font = font(b.size, b.weight);
+        ctx.fillText(line.slice(b.amount.length).trimStart(), x + w, y);
+      } else ctx.fillText(line, x, y);
+    });
+  }
+
+  const fy = canvas.height - footerH;
+  ctx.fillStyle = C.brand;
+  ctx.fillRect(0, fy, W, footerH);
+  ctx.fillStyle = C.bg;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = font(64, 700, '"Dancing Script", cursive');
+  ctx.fillText('Martinčina kuchařka', W / 2, fy + footerH / 2);
+
+  return new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.88));
+}
+
 async function openShare(r, servings, urls) {
   const text = recipeText(r, servings);
   const firstPhoto = r.photos[0] && urls[r.photos[0]];
-  let photoFile = null;
-  if (firstPhoto && navigator.canShare) {
-    try {
-      const blob = await (await fetch(firstPhoto)).blob();
-      const f = new File([blob], `${r.title}.jpg`, { type: blob.type || 'image/jpeg' });
-      if (navigator.canShare({ files: [f] })) photoFile = f;
-    } catch { /* bez fotky */ }
-  }
+  const canFiles = !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'x.jpg', { type: 'image/jpeg' })] }));
+  let withPhoto = false;
+  let cardFile = null;
+  let cardUrl = null;
 
   const sheet = document.createElement('div');
   sheet.className = 'sheet-wrap';
-  sheet.innerHTML = `<div class="sheet">
-    <div class="sheet-head"><b>Sdílet recept</b><button class="icon-btn" data-act="close" aria-label="Zavřít">${ICON.x}</button></div>
-    <pre class="share-preview">${esc(text)}</pre>
-    <div class="share-grid">
-      ${navigator.share ? `<button class="btn primary" data-act="native">${ICON.share} Poslat…<small>Messenger, WhatsApp, SMS…</small></button>` : ''}
-      ${photoFile ? `<button class="btn" data-act="photo">${ICON.image} Poslat s fotkou</button>` : ''}
-      <a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(text)}">💬 WhatsApp</a>
-      <a class="btn" href="mailto:?subject=${encodeURIComponent('Recept: ' + r.title)}&body=${encodeURIComponent(text)}">✉️ E-mail</a>
-      <button class="btn" data-act="copy">📋 Kopírovat text</button>
-    </div>
-  </div>`;
   document.body.appendChild(sheet);
-  const close = () => sheet.remove();
+  const close = () => { sheet.remove(); if (cardUrl) URL.revokeObjectURL(cardUrl); };
+
+  const draw = (busy = false) => {
+    sheet.innerHTML = `<div class="sheet">
+      <div class="sheet-head"><b>Sdílet recept</b><button class="icon-btn" data-act="close" aria-label="Zavřít">${ICON.x}</button></div>
+      <button class="btn primary block" data-act="send" ${busy ? 'disabled' : ''}>${ICON.share} ${busy ? 'Připravuji obrázek…' : 'Poslat'}</button>
+      <div class="share-opts">
+        ${firstPhoto && canFiles ? `<button class="chip ${withPhoto ? 'on' : ''}" data-act="photo">${ICON.image} S fotkou</button>` : ''}
+        <button class="link-btn" data-act="copy">📋 Kopírovat text</button>
+      </div>
+      ${withPhoto && cardUrl
+        ? `<img class="share-card" src="${cardUrl}" alt="Náhled obrázku receptu">`
+        : `<pre class="share-preview">${esc(text)}</pre>`}
+    </div>`;
+  };
+  draw();
+
   sheet.onclick = async (e) => {
     if (e.target === sheet) return close();
     const act = e.target.closest('[data-act]')?.dataset.act;
     try {
       if (act === 'close') close();
-      if (act === 'native') { await navigator.share({ title: r.title, text }); close(); }
-      if (act === 'photo') { await navigator.share({ title: r.title, text, files: [photoFile] }); close(); }
+      if (act === 'photo') {
+        withPhoto = !withPhoto;
+        if (withPhoto && !cardFile) {
+          // Obrázek se připraví hned po zapnutí, aby Poslat fungovalo okamžitě
+          draw(true);
+          const photoBlob = await (await fetch(firstPhoto)).blob();
+          const card = await recipeCard(r, servings, photoBlob);
+          cardFile = new File([card], `${r.title}.jpg`, { type: 'image/jpeg' });
+          cardUrl = URL.createObjectURL(card);
+        }
+        draw();
+      }
+      if (act === 'send') {
+        if (!navigator.share) {
+          await navigator.clipboard.writeText(text);
+          toast('Tady sdílení nejde – recept je zkopírovaný, vložte ho do zprávy');
+          return;
+        }
+        if (withPhoto && cardFile) {
+          // Text i do schránky – kdyby ho aplikace k obrázku nepřidala
+          navigator.clipboard?.writeText(text).catch(() => {});
+          await navigator.share({ files: [cardFile], title: r.title, text });
+        } else {
+          await navigator.share({ title: r.title, text });
+        }
+        close();
+      }
       if (act === 'copy') { await navigator.clipboard.writeText(text); toast('Recept zkopírován – vložte ho do zprávy'); }
     } catch (err) {
+      draw();
       if (err.name !== 'AbortError') toast('Sdílení se nepovedlo: ' + err.message);
     }
   };
