@@ -351,7 +351,7 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
 .meal:first-of-type { border-top: 0; }
 .meal-label { width: 58px; flex: none; font-size: .78rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; padding-top: 3px; }
 .meal-items { flex: 1; min-width: 0; display: grid; gap: 4px; }
-.plan-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; position: relative; padding-right: 28px; }
+.plan-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; position: relative; padding-right: 56px; }
 .plan-item a, .plan-item > span:first-child { font-weight: 700; color: var(--text); text-decoration: none; }
 .plan-item.cont a, .plan-item.cont > span:first-child { font-weight: 600; color: var(--muted); }
 .plan-item .idea, .plan-item .days { font-size: .72rem; font-weight: 700; padding: 1px 8px; border-radius: 99px; }
@@ -360,6 +360,8 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
 .plan-item small { width: 100%; color: var(--muted); }
 .plan-item .del { position: absolute; right: 0; top: 0; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px; }
 .plan-item .del svg { width: 16px; height: 16px; }
+.plan-item .edit { position: absolute; right: 26px; top: 0; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px; }
+.plan-item .edit svg { width: 16px; height: 16px; }
 
 /* Spodní panel (přidat do jídelníčku) */
 .sheet-wrap { position: fixed; inset: 0; z-index: 35; background: rgba(30, 5, 12, .45); display: flex; align-items: flex-end; justify-content: center; }

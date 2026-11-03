@@ -294,6 +294,10 @@ class SupabaseStore {
     const { error } = await this.sb.from('meal_plan').insert(item);
     if (error) throw error;
   }
+  async updatePlan(id, patch) {
+    const { error } = await this.sb.from('meal_plan').update(patch).eq('id', id);
+    if (error) throw error;
+  }
   async deletePlan(id) {
     const { error } = await this.sb.from('meal_plan').delete().eq('id', id);
     if (error) throw error;
@@ -348,6 +352,9 @@ class LocalStore {
   }
   async addPlan(item) {
     this._set('rc_demo_plan', [...this._get('rc_demo_plan', []), { id: uuid(), created_at: new Date().toISOString(), ...item }]);
+  }
+  async updatePlan(id, patch) {
+    this._set('rc_demo_plan', this._get('rc_demo_plan', []).map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
   async deletePlan(id) {
     this._set('rc_demo_plan', this._get('rc_demo_plan', []).filter((p) => p.id !== id));
@@ -1272,6 +1279,7 @@ async function renderPlan(preselectRecipeId) {
                 ${r ? '' : '<span class="idea">💡 nápad</span>'}
                 ${p.days > 1 ? `<span class="days">${p.dayNo}. den z ${p.days}</span>` : ''}
                 ${p.note ? `<small>${esc(p.note)}</small>` : ''}
+                <button class="edit" data-edit="${esc(p.id)}" aria-label="Upravit">${ICON.edit}</button>
                 <button class="del" data-del="${esc(p.id)}" aria-label="Odebrat">${ICON.x}</button>
               </div>`;
             }).join('')}</div></div>`;
@@ -1284,6 +1292,10 @@ async function renderPlan(preselectRecipeId) {
     const tw = $('#thisW');
     if (tw) tw.onclick = async () => { state.week = mondayOf(new Date()); await load(); draw(); };
     $$('[data-add]').forEach((b) => (b.onclick = () => openAdd(b.dataset.add)));
+    $$('[data-edit]').forEach((b) => (b.onclick = () => {
+      const p = plan.find((x) => x.id === b.dataset.edit);
+      openAdd(p.day, p.recipe_id, p);
+    }));
     $$('[data-del]').forEach((b) => (b.onclick = async () => {
       const p = plan.find((x) => x.id === b.dataset.del);
       if (!confirm(`Odebrat „${p.title}“ z jídelníčku?`)) return;
@@ -1314,9 +1326,19 @@ async function renderPlan(preselectRecipeId) {
     } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
   };
 
-  // Spodní panel pro přidání jídla: z receptů, nebo jen nápad
-  const openAdd = (dayIso, recipeId = null) => {
-    let meal = 'obed', days = 1, mode = 'recept', chosen = recipeId, q = '';
+  // Spodní panel pro přidání (nebo úpravu) jídla: z receptů, nebo jen nápad
+  const openAdd = (dayIso, recipeId = null, editing = null) => {
+    let meal = 'obed', days = 1, mode = 'recept', chosen = recipeId, q = '', idea = '', note = '';
+    if (editing) {
+      meal = editing.meal; days = editing.days; note = editing.note || '';
+      if (!recipes.some((r) => r.id === editing.recipe_id)) { mode = 'napad'; idea = editing.title; }
+    }
+    // Vícedenní jídlo mohlo začít minulý týden – jeho den musí být v nabídce taky
+    const dayOptions = DAY_NAMES.map((n, i) => [isoDay(addDays(state.week, i)), `${n} ${shortDate(addDays(state.week, i))}`]);
+    if (!dayOptions.some(([di]) => di === dayIso)) {
+      const d = parseDay(dayIso);
+      dayOptions.unshift([dayIso, `${DAY_NAMES[(d.getDay() + 6) % 7]} ${shortDate(d)}`]);
+    }
     const sheet = document.createElement('div');
     sheet.className = 'sheet-wrap';
     document.body.appendChild(sheet);
@@ -1326,12 +1348,9 @@ async function renderPlan(preselectRecipeId) {
       const words = norm(q).split(/\s+/).filter(Boolean);
       const list = recipes.filter((r) => matches(r, words)).slice(0, 40);
       sheet.innerHTML = `<div class="sheet form">
-        <div class="sheet-head"><b>Přidat do jídelníčku</b><button class="icon-btn" id="shClose" aria-label="Zavřít">${ICON.x}</button></div>
-        <label>Den</label>
-        <select class="field" id="shDay">${DAY_NAMES.map((n, i) => {
-          const di = isoDay(addDays(state.week, i));
-          return `<option value="${di}" ${di === dayIso ? 'selected' : ''}>${n} ${shortDate(addDays(state.week, i))}</option>`;
-        }).join('')}</select>
+        <div class="sheet-head"><b>${editing ? 'Upravit v jídelníčku' : 'Přidat do jídelníčku'}</b><button class="icon-btn" id="shClose" aria-label="Zavřít">${ICON.x}</button></div>
+        <label>${editing && editing.days > 1 ? 'Od kterého dne' : 'Den'}</label>
+        <select class="field" id="shDay">${dayOptions.map(([di, label]) => `<option value="${di}" ${di === dayIso ? 'selected' : ''}>${label}</option>`).join('')}</select>
         <div class="grid2">
           <div><label>Jídlo</label><div class="seg">${MEALS.map(([k, l]) => `<button type="button" class="chip ${meal === k ? 'on' : ''}" data-meal="${k}">${l}</button>`).join('')}</div></div>
           <div><label>Na kolik dní</label><div class="servings"><button type="button" id="dMinus">−</button><span>${days} ${plural(days, 'den', 'dny', 'dní')}</span><button type="button" id="dPlus">+</button></div></div>
@@ -1344,9 +1363,9 @@ async function renderPlan(preselectRecipeId) {
           <input type="text" id="shQ" placeholder="Hledat recept…" value="${esc(q)}" autocomplete="off">
           <div class="pick-list">${list.map((r) => `<button type="button" class="pick ${chosen === r.id ? 'on' : ''}" data-r="${esc(r.id)}">${esc(r.title)}<small>${esc(r.categories.join(', '))}</small></button>`).join('') || '<div class="day-empty">Nic nenalezeno</div>'}</div>`
         : `
-          <input type="text" id="shIdea" placeholder="např. Zkusit thajské kari" autocomplete="off">
-          <input type="text" id="shNote" placeholder="poznámka, odkaz… (nepovinné)" autocomplete="off" style="margin-top:8px">`}
-        <div class="row"><button type="button" class="btn primary" id="shSave">Přidat</button></div>
+          <input type="text" id="shIdea" placeholder="např. Zkusit thajské kari" value="${esc(idea)}" autocomplete="off">`}
+        <input type="text" id="shNote" placeholder="poznámka, odkaz… (nepovinné)" value="${esc(note)}" autocomplete="off" style="margin-top:8px">
+        <div class="row"><button type="button" class="btn primary" id="shSave">${editing ? 'Uložit' : 'Přidat'}</button></div>
       </div>`;
 
       $('#shClose', sheet).onclick = close;
@@ -1362,25 +1381,31 @@ async function renderPlan(preselectRecipeId) {
         drawSheet();
         const n = $('#shQ', sheet); n.focus(); n.setSelectionRange(pos, pos);
       };
+      // Rozepsaný nápad si pamatujeme, aby ho překreslení panelu (dny, oběd/večeře) nesmazalo
+      const ii = $('#shIdea', sheet);
+      if (ii) ii.oninput = (e) => { idea = e.target.value; };
+      const ni = $('#shNote', sheet);
+      if (ni) ni.oninput = (e) => { note = e.target.value; };
       $$('[data-r]', sheet).forEach((b) => (b.onclick = () => { chosen = b.dataset.r; drawSheet(); }));
       $('#shSave', sheet).onclick = async () => {
         let item;
         if (mode === 'recept') {
           const r = recipes.find((x) => x.id === chosen);
           if (!r) { toast('Vyberte recept'); return; }
-          item = { day: dayIso, meal, days, recipe_id: r.id, title: r.title };
+          item = { day: dayIso, meal, days, recipe_id: r.id, title: r.title, note: note.trim() || null };
         } else {
-          const t = $('#shIdea', sheet).value.trim();
+          const t = idea.trim();
           if (!t) { toast('Napište, co chcete zkusit'); return; }
-          item = { day: dayIso, meal, days, recipe_id: null, title: t, note: $('#shNote', sheet).value.trim() || null };
+          item = { day: dayIso, meal, days, recipe_id: null, title: t, note: note.trim() || null };
         }
         try {
-          await store.addPlan(item);
+          if (editing) await store.updatePlan(editing.id, item);
+          else await store.addPlan(item);
           close();
           await load();
           draw();
-          toast('Přidáno do jídelníčku');
-        } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
+          toast(editing ? 'Uloženo' : 'Přidáno do jídelníčku');
+        } catch (e) { toast((editing ? 'Nepodařilo se uložit: ' : 'Nepodařilo se přidat: ') + e.message); }
       };
     };
     sheet.onclick = (e) => { if (e.target === sheet) close(); };
