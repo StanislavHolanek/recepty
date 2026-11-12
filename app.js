@@ -865,7 +865,13 @@ async function openShare(r, servings, urls) {
   let text = recipeText(r, servings, lang);
   const firstPhoto = r.photos[0] && urls[r.photos[0]];
   const canFiles = !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'x.jpg', { type: 'image/jpeg' })] }));
-  let withPhoto = false;
+  // „Jako obrázek“ se pamatuje celkově; „s fotkou“ u každého receptu zvlášť
+  // (u receptů, kde je první fotka jen papírek, ji Martinka vypne a už to tak zůstane)
+  const store_ = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { return null; } };
+  let noPhotoIds = [];
+  try { noPhotoIds = JSON.parse(store_('rc_share_nophoto')) || []; } catch { /* nic */ }
+  let asImage = canFiles && store_('rc_share_image') === '1';
+  let withPhoto = !!firstPhoto && !noPhotoIds.includes(r.id);
   let cardFile = null;
   let cardUrl = null;
 
@@ -875,7 +881,7 @@ async function openShare(r, servings, urls) {
   const close = () => { sheet.remove(); if (cardUrl) URL.revokeObjectURL(cardUrl); };
 
   const makeCard = async () => {
-    const photoBlob = await (await fetch(firstPhoto)).blob();
+    const photoBlob = withPhoto ? await (await fetch(firstPhoto)).blob() : null;
     const card = await recipeCard(r, servings, photoBlob, lang);
     cardFile = new File([card], `${loc(r, lang).title}.jpg`, { type: 'image/jpeg' });
     if (cardUrl) URL.revokeObjectURL(cardUrl);
@@ -890,15 +896,25 @@ async function openShare(r, servings, urls) {
         ${r.translations.vi.stale && lang === 'vi' ? '<p class="hint">Recept se po překladu změnil – vietnamská verze nemusí odpovídat.</p>' : ''}` : ''}
       <button class="btn primary block" data-act="send" ${busy ? 'disabled' : ''}>${ICON.share} ${busy ? 'Připravuji obrázek…' : 'Poslat'}</button>
       <div class="share-opts">
-        ${firstPhoto && canFiles ? `<button class="chip ${withPhoto ? 'on' : ''}" data-act="photo">${ICON.image} S fotkou</button>` : ''}
+        <span class="seg">
+          ${canFiles ? `<button class="chip ${asImage ? 'on' : ''}" data-act="image" ${busy ? 'disabled' : ''}>${ICON.image} Jako obrázek</button>` : ''}
+          ${asImage && firstPhoto ? `<button class="chip ${withPhoto ? 'on' : ''}" data-act="photo" ${busy ? 'disabled' : ''}>${withPhoto ? '✓' : '+'} s fotkou</button>` : ''}
+        </span>
         <button class="link-btn" data-act="copy">📋 Kopírovat text</button>
       </div>
-      ${withPhoto && cardUrl
+      ${asImage && cardUrl
         ? `<img class="share-card" src="${cardUrl}" alt="Náhled obrázku receptu">`
         : `<pre class="share-preview">${esc(text)}</pre>`}
     </div>`;
   };
-  draw();
+  // Obrázek se připraví hned, aby Poslat fungovalo okamžitě (sdílení musí běžet přímo po ťuknutí)
+  const rebuild = async () => {
+    cardFile = null;
+    if (asImage) { draw(true); await makeCard(); }
+    draw();
+  };
+  if (asImage) rebuild().catch(() => { asImage = false; draw(); });
+  else draw();
 
   sheet.onclick = async (e) => {
     if (e.target === sheet) return close();
@@ -911,19 +927,19 @@ async function openShare(r, servings, urls) {
           lang = l;
           try { localStorage.setItem('rc_share_lang', lang); } catch { /* bez úložiště */ }
           text = recipeText(r, servings, lang);
-          cardFile = null;
-          if (withPhoto) { draw(true); await makeCard(); }
-          draw();
+          await rebuild();
         }
+      }
+      if (act === 'image') {
+        asImage = !asImage;
+        store_('rc_share_image', asImage ? '1' : '0');
+        await rebuild();
       }
       if (act === 'photo') {
         withPhoto = !withPhoto;
-        if (withPhoto && !cardFile) {
-          // Obrázek se připraví hned po zapnutí, aby Poslat fungovalo okamžitě
-          draw(true);
-          await makeCard();
-        }
-        draw();
+        noPhotoIds = withPhoto ? noPhotoIds.filter((id) => id !== r.id) : [...new Set([...noPhotoIds, r.id])];
+        store_('rc_share_nophoto', JSON.stringify(noPhotoIds));
+        await rebuild();
       }
       if (act === 'send') {
         if (!navigator.share) {
@@ -931,7 +947,7 @@ async function openShare(r, servings, urls) {
           toast('Tady sdílení nejde – recept je zkopírovaný, vložte ho do zprávy');
           return;
         }
-        if (withPhoto && cardFile) {
+        if (asImage && cardFile) {
           // Text i do schránky – kdyby ho aplikace k obrázku nepřidala
           navigator.clipboard?.writeText(text).catch(() => {});
           await navigator.share({ files: [cardFile], title: loc(r, lang).title, text });
