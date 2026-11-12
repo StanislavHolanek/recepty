@@ -174,6 +174,8 @@ function normalizeRecipe(r) {
     source: r.source || '',
     photos: r.photos || [],
     favorite: !!r.favorite,
+    // Překlady receptu, např. {vi: {title, ingredients, steps, notes, stale}} – připravuje je Claude
+    translations: r.translations && typeof r.translations === 'object' ? r.translations : {},
     // 'ceka' = jen nafocený papírek, přepis do ingrediencí a postupu udělá Claude
     status: r.status === 'ceka' ? 'ceka' : 'hotovo',
   };
@@ -679,27 +681,63 @@ async function renderDetail(id) {
 
 /* ================= Sdílení receptu ================= */
 
+// Aplikace je česky; jen samotné recepty mohou mít vietnamský překlad (recipes.translations.vi),
+// který připravuje Claude. Při sdílení se dá vybrat, ve kterém jazyce recept poslat.
+const SHARE_LANGS = [['cs', '🇨🇿 Česky'], ['vi', '🇻🇳 Vietnamsky']];
+const SHARE_TEXTS = {
+  cs: { ing: 'Ingredience', steps: 'Postup', footer: '— z Martinčiny kuchařky 🌸', brand: 'Martinčina kuchařka',
+    photo: '(recept je na fotce)', portions: ['porce', 'porce', 'porcí'], h: 'h', min: 'min' },
+  vi: { ing: 'Nguyên liệu', steps: 'Cách làm', footer: '— từ Sổ nấu ăn của Martinka 🌸', brand: 'Sổ nấu ăn của Martinka',
+    photo: '(công thức nằm trong ảnh)', portions: ['phần', 'phần', 'phần'], h: 'giờ', min: 'phút' },
+};
+const CAT_VI = { 'Snídaně': 'Bữa sáng', 'Polévky': 'Súp & canh', 'Obědy': 'Bữa trưa', 'Večeře': 'Bữa tối', 'Přílohy': 'Món ăn kèm',
+  'Omáčky': 'Nước sốt', 'Saláty': 'Salad', 'Zákusky': 'Món tráng miệng', 'Pečivo': 'Bánh mì & bánh nướng', 'Nápoje': 'Đồ uống',
+  'Zavařování': 'Mứt & đồ muối', 'Ostatní': 'Khác' };
+const hasVi = (r) => !!r.translations?.vi?.title;
+
+// Recept v daném jazyce: vietnamský překlad, pokud existuje, jinak český originál
+function loc(r, lang) {
+  const v = lang === 'vi' && hasVi(r) && r.translations.vi;
+  if (!v) return r;
+  return {
+    ...r,
+    title: v.title,
+    categories: r.categories.map((c) => CAT_VI[c] || c),
+    ingredients: Array.isArray(v.ingredients) && v.ingredients.length ? v.ingredients.map(normalizeIngredient).filter(Boolean) : r.ingredients,
+    steps: Array.isArray(v.steps) && v.steps.length ? v.steps.map(String) : r.steps,
+    notes: v.notes ?? r.notes,
+  };
+}
+
+function shareMeta(r, servings, L, sep) {
+  const time = r.time_minutes
+    ? (Math.floor(r.time_minutes / 60) ? `${Math.floor(r.time_minutes / 60)} ${L.h}${r.time_minutes % 60 ? ` ${r.time_minutes % 60} ${L.min}` : ''}` : `${r.time_minutes} ${L.min}`)
+    : '';
+  return [r.categories.join(', '), time, servings ? `${servings} ${plural(servings, ...L.portions)}` : ''].filter(Boolean).join(sep);
+}
+
 // Recept jako čitelný text do zprávy (WhatsApp, Messenger, e-mail…)
-function recipeText(r, servings) {
+function recipeText(orig, servings, lang = 'cs') {
+  const r = loc(orig, lang), L = SHARE_TEXTS[lang] || SHARE_TEXTS.cs;
   const factor = r.servings && servings ? servings / r.servings : 1;
-  const meta = [r.categories.join(', '), formatMinutes(r.time_minutes),
-    servings ? `${servings} ${plural(servings, 'porce', 'porce', 'porcí')}` : ''].filter(Boolean).join(' · ');
+  const meta = shareMeta(r, servings, L, ' · ');
+  const ingHead = `🛒 ${L.ing.toUpperCase()}`;
   const out = [`🌸 ${r.title.toUpperCase()}`];
   if (meta) out.push(meta);
   if (r.ingredients.length) {
-    out.push('', '🛒 INGREDIENCE');
+    out.push('', ingHead);
     for (const ing of r.ingredients) {
-      if (ing.section) out.push(...(out.at(-1) === '🛒 INGREDIENCE' ? [] : ['']), `${ing.section}:`);
+      if (ing.section) out.push(...(out.at(-1) === ingHead ? [] : ['']), `${ing.section}:`);
       else out.push(`• ${[ingredientAmount(ing, factor), ing.name].filter(Boolean).join(' ')}`);
     }
   }
   if (r.steps.length) {
-    out.push('', '👩‍🍳 POSTUP');
+    out.push('', `👩‍🍳 ${L.steps.toUpperCase()}`);
     r.steps.forEach((s, i) => out.push(`${i + 1}. ${s}`));
   }
   if (r.notes) out.push('', `📝 ${r.notes}`);
-  if (r.status === 'ceka' && !r.ingredients.length) out.push('', '(recept je na fotce)');
-  out.push('', '— z Martinčiny kuchařky 🌸');
+  if (r.status === 'ceka' && !r.ingredients.length) out.push('', L.photo);
+  out.push('', L.footer);
   return out.join('\n');
 }
 
@@ -717,7 +755,8 @@ function wrapLines(ctx, text, maxWidth) {
 
 // Recept jako jeden obrázek: nahoře hlavní fotka, pod ní ingredience a postup.
 // Messenger a další aplikace u sdílení s fotkou text často zahodí – v obrázku zůstane všechno.
-async function recipeCard(r, servings, photoBlob) {
+async function recipeCard(orig, servings, photoBlob, lang = 'cs') {
+  const r = loc(orig, lang), L = SHARE_TEXTS[lang] || SHARE_TEXTS.cs;
   await document.fonts?.ready;
   const W = 1080, PAD = 70, TW = W - PAD * 2;
   const factor = r.servings && servings ? servings / r.servings : 1;
@@ -728,18 +767,17 @@ async function recipeCard(r, servings, photoBlob) {
   const blocks = [];
   const add = (text, size, weight, color, opts = {}) => blocks.push({ text, size, weight, color, ...opts });
   add(r.title, 66, 800, C.brand, { gap: 0 });
-  const meta = [r.categories.join(', '), formatMinutes(r.time_minutes),
-    servings ? `${servings} ${plural(servings, 'porce', 'porce', 'porcí')}` : ''].filter(Boolean).join('  ·  ');
+  const meta = shareMeta(r, servings, L, '  ·  ');
   if (meta) add(meta, 34, 600, C.muted, { gap: 10 });
   if (r.ingredients.length) {
-    add('Ingredience', 46, 800, C.brand, { gap: 50, rule: true });
+    add(L.ing, 46, 800, C.brand, { gap: 50, rule: true });
     for (const ing of r.ingredients) {
       if (ing.section) add(ing.section.toUpperCase(), 32, 800, C.gold, { gap: 22 });
       else add(`${ingredientAmount(ing, factor)} ${ing.name}`.trim(), 38, 400, C.text, { gap: 12, bullet: '•', amount: ingredientAmount(ing, factor) });
     }
   }
   if (r.steps.length) {
-    add('Postup', 46, 800, C.brand, { gap: 50, rule: true });
+    add(L.steps, 46, 800, C.brand, { gap: 50, rule: true });
     r.steps.forEach((s, i) => add(s, 38, 400, C.text, { gap: 18, bullet: `${i + 1}.` }));
   }
   if (r.notes) add(r.notes, 34, 400, C.muted, { gap: 40, italic: true });
@@ -815,13 +853,16 @@ async function recipeCard(r, servings, photoBlob) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = font(64, 700, '"Dancing Script", cursive');
-  ctx.fillText('Martinčina kuchařka', W / 2, fy + footerH / 2);
+  ctx.fillText(L.brand, W / 2, fy + footerH / 2);
 
   return new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.88));
 }
 
 async function openShare(r, servings, urls) {
-  const text = recipeText(r, servings);
+  // Jazyk se nabízí jen u receptů s překladem; poslední volba se pamatuje
+  let lang = 'cs';
+  if (hasVi(r)) { try { lang = localStorage.getItem('rc_share_lang') === 'vi' ? 'vi' : 'cs'; } catch { /* bez úložiště */ } }
+  let text = recipeText(r, servings, lang);
   const firstPhoto = r.photos[0] && urls[r.photos[0]];
   const canFiles = !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'x.jpg', { type: 'image/jpeg' })] }));
   let withPhoto = false;
@@ -833,9 +874,20 @@ async function openShare(r, servings, urls) {
   document.body.appendChild(sheet);
   const close = () => { sheet.remove(); if (cardUrl) URL.revokeObjectURL(cardUrl); };
 
+  const makeCard = async () => {
+    const photoBlob = await (await fetch(firstPhoto)).blob();
+    const card = await recipeCard(r, servings, photoBlob, lang);
+    cardFile = new File([card], `${loc(r, lang).title}.jpg`, { type: 'image/jpeg' });
+    if (cardUrl) URL.revokeObjectURL(cardUrl);
+    cardUrl = URL.createObjectURL(card);
+  };
+
   const draw = (busy = false) => {
     sheet.innerHTML = `<div class="sheet">
       <div class="sheet-head"><b>Sdílet recept</b><button class="icon-btn" data-act="close" aria-label="Zavřít">${ICON.x}</button></div>
+      ${hasVi(r) ? `<div class="seg share-lang">${SHARE_LANGS.map(([l, label]) =>
+        `<button class="chip ${lang === l ? 'on' : ''}" data-act="lang" data-lang="${l}" ${busy ? 'disabled' : ''}>${label}</button>`).join('')}</div>
+        ${r.translations.vi.stale && lang === 'vi' ? '<p class="hint">Recept se po překladu změnil – vietnamská verze nemusí odpovídat.</p>' : ''}` : ''}
       <button class="btn primary block" data-act="send" ${busy ? 'disabled' : ''}>${ICON.share} ${busy ? 'Připravuji obrázek…' : 'Poslat'}</button>
       <div class="share-opts">
         ${firstPhoto && canFiles ? `<button class="chip ${withPhoto ? 'on' : ''}" data-act="photo">${ICON.image} S fotkou</button>` : ''}
@@ -853,15 +905,23 @@ async function openShare(r, servings, urls) {
     const act = e.target.closest('[data-act]')?.dataset.act;
     try {
       if (act === 'close') close();
+      if (act === 'lang') {
+        const l = e.target.closest('[data-lang]').dataset.lang;
+        if (l !== lang) {
+          lang = l;
+          try { localStorage.setItem('rc_share_lang', lang); } catch { /* bez úložiště */ }
+          text = recipeText(r, servings, lang);
+          cardFile = null;
+          if (withPhoto) { draw(true); await makeCard(); }
+          draw();
+        }
+      }
       if (act === 'photo') {
         withPhoto = !withPhoto;
         if (withPhoto && !cardFile) {
           // Obrázek se připraví hned po zapnutí, aby Poslat fungovalo okamžitě
           draw(true);
-          const photoBlob = await (await fetch(firstPhoto)).blob();
-          const card = await recipeCard(r, servings, photoBlob);
-          cardFile = new File([card], `${r.title}.jpg`, { type: 'image/jpeg' });
-          cardUrl = URL.createObjectURL(card);
+          await makeCard();
         }
         draw();
       }
@@ -874,9 +934,9 @@ async function openShare(r, servings, urls) {
         if (withPhoto && cardFile) {
           // Text i do schránky – kdyby ho aplikace k obrázku nepřidala
           navigator.clipboard?.writeText(text).catch(() => {});
-          await navigator.share({ files: [cardFile], title: r.title, text });
+          await navigator.share({ files: [cardFile], title: loc(r, lang).title, text });
         } else {
-          await navigator.share({ title: r.title, text });
+          await navigator.share({ title: loc(r, lang).title, text });
         }
         close();
       }
@@ -1018,6 +1078,11 @@ async function renderEdit(id) {
       });
       // Kdo nafocený recept ručně dopíše, tím ho zároveň zpracoval
       if (rec.ingredients.length || rec.steps.length) rec.status = 'hotovo';
+      // Změněný obsah = vietnamský překlad je zastaralý; Claude ho při /cms-recepty přeloží znovu
+      const content = (x) => JSON.stringify([x.title, x.ingredients, x.steps, x.notes]);
+      if (orig && hasVi(rec) && content(rec) !== content(orig)) {
+        rec.translations = { ...rec.translations, vi: { ...rec.translations.vi, stale: true } };
+      }
       await store.saveRecipe(rec);
       await store.removePhotos(removed);
       await loadRecipes(true);

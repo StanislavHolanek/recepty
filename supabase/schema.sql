@@ -26,6 +26,9 @@ create table if not exists public.recipes (
 -- Pro databáze založené před přidáním stavu receptu
 alter table public.recipes add column if not exists status text not null default 'hotovo';
 
+-- Překlady receptů, např. {"vi": {"title", "ingredients", "steps", "notes", "stale"}}
+alter table public.recipes add column if not exists translations jsonb not null default '{}';
+
 -- Nákupní seznam -------------------------------------------------------
 create table if not exists public.shopping_items (
   id            uuid primary key default gen_random_uuid(),
