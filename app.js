@@ -22,7 +22,7 @@ const ICON = {
   image: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M20 16l-5-5-8 8"/></svg>',
 };
 
-const MAX_PHOTOS = 3;
+const MAX_PHOTOS = 5;
 
 // Kytička do designu: pět okvětních lístků a střed
 function flower(petal = 'var(--petal)', center = 'var(--flower-center)', cls = '') {
@@ -1046,7 +1046,7 @@ async function renderEdit(id) {
     $$('#phs input[type=file]').forEach((input) => (input.onchange = (e) => {
       const free = MAX_PHOTOS - keptPhotos.length - newPhotos.length;
       const files = [...e.target.files];
-      if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotky`);
+      if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotek`);
       for (const file of files.slice(0, free)) newPhotos.push({ file, url: URL.createObjectURL(file) });
       drawPhotos();
     }));
@@ -1266,7 +1266,7 @@ async function renderFoto() {
     $$('#ffPhs input[type=file]').forEach((input) => (input.onchange = (e) => {
       const files = [...e.target.files];
       const free = MAX_PHOTOS - photos.length;
-      if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotky`);
+      if (files.length > free) toast(`K receptu jdou nejvýš ${MAX_PHOTOS} fotek`);
       for (const file of files.slice(0, free)) photos.push({ file, url: URL.createObjectURL(file) });
       draw();
     }));

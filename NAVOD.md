@@ -63,7 +63,7 @@ Provoz je zdarma: web běží na GitHub Pages, data (recepty, fotky, nákupní s
 }
 ```
 Položky ingrediencí jsou ve tvaru „množství jednotka název“. Řádek končící dvojtečkou je nadpis skupiny.
-`photo_data` je nepovinné (nejvýš 3 fotky).
+`photo_data` je nepovinné (nejvýš 5 fotek).
 Kategorie: Snídaně, Polévky, Obědy, Večeře, Přílohy, Omáčky, Saláty, Zákusky, Pečivo, Nápoje, Zavařování, Ostatní.
 Recept může mít víc kategorií a jdou přidat i vlastní.
 
