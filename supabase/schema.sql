@@ -40,6 +40,11 @@ create table if not exists public.shopping_items (
   created_at    timestamptz not null default now()
 );
 
+-- Pro sčítání stejných surovin a řazení podle oddělení obchodu (přidáno při spojení s veřejnou edicí)
+alter table public.shopping_items add column if not exists qty  numeric;
+alter table public.shopping_items add column if not exists unit text;
+alter table public.shopping_items add column if not exists dept text;
+
 -- Automatická aktualizace updated_at
 create or replace function public.touch_updated_at() returns trigger
 language plpgsql as $$

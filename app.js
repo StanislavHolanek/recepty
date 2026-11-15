@@ -1,5 +1,12 @@
 'use strict';
 
+// Edice (Martinčina kuchařka, veřejná…) se liší jen nastavením v config.js, kód je společný
+const EDICE = window.EDICE || { id: 'verejna', nazev: 'Kuchařka', prevod: 'test', jazykyReceptu: [], sdileni: {} };
+const APP_NAME = EDICE.nazev;
+// 'claude' = recept z fotky přepíše Claude mimo aplikaci; jinak převod přímo v aplikaci (AI)
+const BY_CLAUDE = EDICE.prevod === 'claude';
+const PENDING = BY_CLAUDE ? 'Čeká na přepis' : 'Čeká na převod';
+
 /* ================= Pomocné funkce ================= */
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -81,7 +88,7 @@ function toast(msg) {
 
 function setTitle(title, back) {
   $('#pageTitle').textContent = title;
-  document.title = title === 'Martinčina kuchařka' ? title : `${title} · Martinčina kuchařka`;
+  document.title = title === APP_NAME ? title : `${title} · ${APP_NAME}`;
   $('#backBtn').hidden = !back;
 }
 
@@ -171,12 +178,13 @@ function normalizeRecipe(r) {
     ingredients: (r.ingredients || []).map(normalizeIngredient).filter(Boolean),
     steps: (r.steps || []).map((s) => String(s).trim()).filter(Boolean),
     notes: r.notes || '',
-    source: r.source || '',
+    // Původ receptu: od koho a odkud je, např. „od babičky Marie, 1975“
+    source: r.source || r.origin || '',
     photos: r.photos || [],
     favorite: !!r.favorite,
-    // Překlady receptu, např. {vi: {title, ingredients, steps, notes, stale}} – připravuje je Claude
+    // Překlady receptu, např. {vi: {title, ingredients, steps, notes, stale}}
     translations: r.translations && typeof r.translations === 'object' ? r.translations : {},
-    // 'ceka' = jen nafocený papírek, přepis do ingrediencí a postupu udělá Claude
+    // 'ceka' = jen nafocený papírek, přepis zatím neproběhl (např. bez signálu nebo čeká na Clauda)
     status: r.status === 'ceka' ? 'ceka' : 'hotovo',
   };
 }
@@ -204,14 +212,142 @@ function compressImage(file, maxSide = 1600, quality = 0.82) {
 const blobToDataUrl = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
 const dataUrlToBlob = async (d) => (await fetch(d)).blob();
 
-/* ================= Úložiště: Supabase ================= */
+/* ================= Úložiště: v zařízení (IndexedDB) ================= */
 
+// Všechna data jsou zatím jen v tomto zařízení. Později se stejné rozhraní (metody níže)
+// napojí na Supabase (účty, rodiny, sdílení); zbytek aplikace se měnit nebude.
+class DeviceStore {
+  constructor() {
+    this.mode = 'device';
+    this.urls = new Map();
+    this.dbPromise = null;
+  }
+  db() {
+    if (!this.dbPromise) {
+      this.dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open('babicina-kucharka', 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          for (const name of ['recipes', 'shopping', 'plan']) db.createObjectStore(name, { keyPath: 'id' });
+          db.createObjectStore('photos');
+          db.createObjectStore('meta');
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(new Error('Úložiště v zařízení nejde otevřít (soukromé okno?)'));
+      });
+      // Požádat prohlížeč, ať data při nedostatku místa nemaže
+      navigator.storage?.persist?.().catch(() => {});
+    }
+    return this.dbPromise;
+  }
+  async _tx(names, mode, fn) {
+    const db = await this.db();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(names, mode);
+      let result;
+      Promise.resolve(fn(...[].concat(names).map((n) => tx.objectStore(n)))).then((r) => { result = r; });
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error || new Error('Chyba úložiště'));
+      tx.onabort = () => reject(tx.error?.name === 'QuotaExceededError'
+        ? new Error('V zařízení došlo místo') : tx.error || new Error('Uložení se nepovedlo'));
+    });
+  }
+  _req(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+  _all(name) { return this._tx(name, 'readonly', (s) => this._req(s.getAll())); }
+  _put(name, items) { return this._tx(name, 'readwrite', (s) => { for (const i of items) s.put(i); }); }
+
+  async session() { return { user: { email: '' } }; }
+  async userEmail() { return ''; }
+  async signOut() {}
+
+  async listRecipes() {
+    // Při prvním spuštění vložit ukázkové recepty, ať aplikace není prázdná
+    const seeded = await this._tx('meta', 'readonly', (s) => this._req(s.get('seeded')));
+    if (!seeded) {
+      await this._put('recipes', DEMO_RECIPES.map(normalizeRecipe));
+      await this._tx('meta', 'readwrite', (s) => s.put(true, 'seeded'));
+    }
+    return (await this._all('recipes')).sort((a, b) => a.title.localeCompare(b.title, 'cs'));
+  }
+  async saveRecipe(r) { await this._put('recipes', [r]); }
+  async deleteRecipe(r) {
+    await this._tx(['recipes', 'photos'], 'readwrite', (rs, ps) => {
+      rs.delete(r.id);
+      for (const p of r.photos || []) ps.delete(p);
+    });
+  }
+  async uploadPhoto(_recipeId, blob) {
+    const path = `foto-${uuid()}`;
+    await this._tx('photos', 'readwrite', (s) => s.put(blob, path));
+    return path;
+  }
+  async removePhotos(paths) {
+    if (!paths.length) return;
+    await this._tx('photos', 'readwrite', (s) => { for (const p of paths) s.delete(p); });
+    for (const p of paths) { if (this.urls.has(p)) URL.revokeObjectURL(this.urls.get(p)); this.urls.delete(p); }
+  }
+  async photoBlob(path) {
+    return this._tx('photos', 'readonly', (s) => this._req(s.get(path)));
+  }
+  async photoUrls(paths) {
+    for (const p of paths) {
+      if (this.urls.has(p)) continue;
+      const blob = await this.photoBlob(p);
+      if (blob) this.urls.set(p, URL.createObjectURL(blob));
+    }
+    return Object.fromEntries(paths.map((p) => [p, this.urls.get(p)]));
+  }
+
+  async listShopping() {
+    return (await this._all('shopping')).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+  async addShopping(items) {
+    const now = Date.now();
+    await this._put('shopping', items.map((i, n) => ({
+      id: uuid(), checked: false, amount: null, recipe_id: null, recipe_title: null,
+      created_at: new Date(now + n).toISOString(), ...i,
+    })));
+  }
+  async updateShopping(id, patch) {
+    await this._tx('shopping', 'readwrite', async (s) => {
+      const it = await this._req(s.get(id));
+      if (it) s.put({ ...it, ...patch });
+    });
+  }
+  async deleteShopping(ids) {
+    await this._tx('shopping', 'readwrite', (s) => { for (const id of ids) s.delete(id); });
+  }
+  onShoppingChange() {}
+
+  async listPlan(from, to) {
+    return (await this._all('plan')).filter((p) => p.day >= from && p.day <= to)
+      .sort((a, b) => a.day.localeCompare(b.day) || a.created_at.localeCompare(b.created_at));
+  }
+  async addPlan(item) {
+    await this._put('plan', [{ id: uuid(), created_at: new Date().toISOString(), ...item }]);
+  }
+  async updatePlan(id, patch) {
+    await this._tx('plan', 'readwrite', async (s) => {
+      const it = await this._req(s.get(id));
+      if (it) s.put({ ...it, ...patch });
+    });
+  }
+  async deletePlan(id) {
+    await this._tx('plan', 'readwrite', (s) => s.delete(id));
+  }
+}
+
+/* ================= Úložiště: Supabase (účet, data na serveru) ================= */
+
+// Stejné metody jako DeviceStore. Kdo co vidí, hlídají pravidla v databázi (RLS), ne aplikace.
 class SupabaseStore {
-  constructor(url, key) {
+  constructor({ url, key }) {
     this.mode = 'supabase';
     this.sb = window.supabase.createClient(url, key);
     this.urls = new Map();
     this.channel = null;
+    // Sloupce nákupu pro sčítání a oddělení (qty, unit, dept); bez nich nákup funguje dál, jen bez nich
+    this.shopExtra = true;
   }
   async session() {
     const { data } = await this.sb.auth.getSession();
@@ -254,6 +390,11 @@ class SupabaseStore {
   async removePhotos(paths) {
     if (paths.length) await this.sb.storage.from('recipe-photos').remove(paths);
   }
+  async photoBlob(path) {
+    const { data, error } = await this.sb.storage.from('recipe-photos').download(path);
+    if (error) throw error;
+    return data;
+  }
   async photoUrls(paths) {
     const missing = paths.filter((p) => !this.urls.has(p));
     if (missing.length) {
@@ -263,18 +404,26 @@ class SupabaseStore {
     return Object.fromEntries(paths.map((p) => [p, this.urls.get(p)]));
   }
 
+  // Zápis do nákupu; když databáze ještě nemá nové sloupce, zkusí to znovu bez nich
+  async _shop(fn, rows) {
+    const strip = (o) => { const { qty, unit, dept, ...rest } = o; return rest; };
+    let { error } = await fn(this.shopExtra ? rows : rows.map(strip));
+    if (error && this.shopExtra && /qty|unit|dept/.test(error.message || '')) {
+      this.shopExtra = false;
+      ({ error } = await fn(rows.map(strip)));
+    }
+    if (error) throw error;
+  }
   async listShopping() {
     const { data, error } = await this.sb.from('shopping_items').select('*').order('created_at');
     if (error) throw error;
     return data;
   }
   async addShopping(items) {
-    const { error } = await this.sb.from('shopping_items').insert(items);
-    if (error) throw error;
+    await this._shop((rows) => this.sb.from('shopping_items').insert(rows), items);
   }
   async updateShopping(id, patch) {
-    const { error } = await this.sb.from('shopping_items').update(patch).eq('id', id);
-    if (error) throw error;
+    await this._shop(([p]) => this.sb.from('shopping_items').update(p).eq('id', id), [patch]);
   }
   async deleteShopping(ids) {
     const { error } = await this.sb.from('shopping_items').delete().in('id', ids);
@@ -306,63 +455,6 @@ class SupabaseStore {
   }
 }
 
-/* ================= Úložiště: demo v prohlížeči ================= */
-
-class LocalStore {
-  constructor() { this.mode = 'local'; }
-  _get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } }
-  _set(k, v) {
-    try { localStorage.setItem(k, JSON.stringify(v)); }
-    catch { throw new Error('Paměť prohlížeče je plná (demo režim má omezené místo na fotky)'); }
-  }
-  async session() { return { user: { email: 'demo' } }; }
-  async userEmail() { return 'demo režim'; }
-  async signOut() {}
-  async listRecipes() {
-    let list = this._get('rc_demo_recipes', null);
-    if (!list) { list = DEMO_RECIPES.map(normalizeRecipe); this._set('rc_demo_recipes', list); }
-    return list.sort((a, b) => a.title.localeCompare(b.title, 'cs'));
-  }
-  async saveRecipe(r) {
-    const list = await this.listRecipes();
-    const i = list.findIndex((x) => x.id === r.id);
-    if (i >= 0) list[i] = r; else list.push(r);
-    this._set('rc_demo_recipes', list);
-  }
-  async deleteRecipe(r) {
-    this._set('rc_demo_recipes', (await this.listRecipes()).filter((x) => x.id !== r.id));
-  }
-  async uploadPhoto(_id, blob) {
-    return blobToDataUrl(await compressImage(blob, 900, 0.7));
-  }
-  async removePhotos() {}
-  async photoUrls(paths) { return Object.fromEntries(paths.map((p) => [p, p])); }
-  async listShopping() { return this._get('rc_demo_shop', []); }
-  async addShopping(items) {
-    this._set('rc_demo_shop', [...(await this.listShopping()), ...items.map((i) => ({ id: uuid(), checked: false, created_at: new Date().toISOString(), ...i }))]);
-  }
-  async updateShopping(id, patch) {
-    this._set('rc_demo_shop', (await this.listShopping()).map((i) => (i.id === id ? { ...i, ...patch } : i)));
-  }
-  async deleteShopping(ids) {
-    this._set('rc_demo_shop', (await this.listShopping()).filter((i) => !ids.includes(i.id)));
-  }
-  onShoppingChange() {}
-  async listPlan(from, to) {
-    return this._get('rc_demo_plan', []).filter((p) => p.day >= from && p.day <= to)
-      .sort((a, b) => a.day.localeCompare(b.day) || a.created_at.localeCompare(b.created_at));
-  }
-  async addPlan(item) {
-    this._set('rc_demo_plan', [...this._get('rc_demo_plan', []), { id: uuid(), created_at: new Date().toISOString(), ...item }]);
-  }
-  async updatePlan(id, patch) {
-    this._set('rc_demo_plan', this._get('rc_demo_plan', []).map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  }
-  async deletePlan(id) {
-    this._set('rc_demo_plan', this._get('rc_demo_plan', []).filter((p) => p.id !== id));
-  }
-}
-
 const DEMO_RECIPES = [
   {
     title: 'Bábovka od babičky', categories: ['Zákusky'], tags: ['sladké', 'víkend'], servings: 12, time_minutes: 70, favorite: true,
@@ -381,16 +473,65 @@ const DEMO_RECIPES = [
     steps: ['Houby namočte na 30 minut do vlažné vody.', 'Brambory nakrájejte na kostičky a vařte s kořením a houbami doměkka.',
       'Smetanu rozmíchejte s moukou a vlijte do polévky, provařte 5 minut.', 'Vejce zastřete zvlášť ve vroucí vodě s octem.',
       'Polévku dochuťte octem, solí a koprem, podávejte s vejcem.'],
-    source: 'Z telefonu',
+    source: 'od maminky',
   },
 ];
 
+/* ================= Převod fotky na recept (AI) ================= */
+
+// Zatím testovací režim: místo AI vrátí ukázkový přepis, aby šel vyzkoušet celý postup
+// (vyfotit → zkontrolovat → uložit). Později se tu zavolá Supabase Edge Function,
+// která ověří předplatné a limit a zavolá Claude. Klíč k AI nikdy nebude v aplikaci.
+const AI = {
+  testMode: EDICE.prevod === 'test',
+  async convert(blobs) {
+    if (this.testMode) {
+      await new Promise((r) => setTimeout(r, 1200 + 400 * blobs.length));
+      return { recipes: [AI_SAMPLE], comment: '' };
+    }
+    throw new Error('Převod přes AI zatím není připojený');
+  },
+};
+
+// Ukázková odpověď ve stejném tvaru, jaký vrací AI (viz test-prevodu/prevod.mjs)
+const AI_SAMPLE = {
+  title: 'Slaný koláč s tortillou',
+  ingredient_groups: [{ name: null, items: [
+    { qty: 3, qty_text: '3', unit: '', name: 'vejce' },
+    { qty: 2, qty_text: '2', unit: '', name: 'cottage' },
+    { qty: null, qty_text: '', unit: '', name: 'sůl, pepř' },
+    { qty: 1, qty_text: '1', unit: 'hrst', name: 'baby špenátu' },
+    { qty: null, qty_text: '', unit: '', name: 'tortilla' },
+    { qty: null, qty_text: '', unit: '', name: 'mozzarella (parmezán)' },
+    { qty: null, qty_text: '', unit: '', name: 'oregáno' },
+  ] }],
+  steps: ['Vejce, cottage, sůl, pepř a špenát promíchat.', 'Do zapékací mísy dát tortillu a zalít směsí.',
+    'Posypat mozzarellou (parmezánem) a oregánem.', 'Péct na 180 °C 30–40 minut.'],
+  categories: ['Obědy', 'Večeře'],
+  servings: null,
+  time_minutes: null,
+  notes: 'Pod nadpisem: 28–30 [?] (asi průměr mísy v cm)',
+  origin: '',
+  uncertain: ['Údaj „28–30 mm“ pod nadpisem: asi průměr mísy, první číslice může být i 2.'],
+};
+
+// Odpověď AI → recept aplikace
+function aiToRecipe(a) {
+  const ingredients = [];
+  for (const g of a.ingredient_groups || []) {
+    if (g.name) ingredients.push({ section: g.name });
+    for (const i of g.items || []) ingredients.push({ qty: i.qty, unit: i.unit || '', name: i.name });
+  }
+  return normalizeRecipe({
+    title: a.title, categories: a.categories, servings: a.servings, time_minutes: a.time_minutes,
+    ingredients, steps: a.steps, notes: a.notes, source: a.origin,
+  });
+}
+
 /* ================= Stav a směrování ================= */
 
-const cfg = window.RECEPTY_CONFIG || {};
-const store = cfg.supabaseUrl && cfg.supabaseKey && window.supabase
-  ? new SupabaseStore(cfg.supabaseUrl, cfg.supabaseKey)
-  : new LocalStore();
+// Edice s databází (Martinčina kuchařka) se přihlašuje; jinak (i při vývoji v režimu DEMO) jsou data jen v zařízení
+const store = EDICE.supabase && !EDICE.demo && window.supabase ? new SupabaseStore(EDICE.supabase) : new DeviceStore();
 
 const state = {
   recipes: null,
@@ -422,19 +563,23 @@ const app = $('#app');
 
 async function route() {
   releaseWakeLock();
+  app.ontouchstart = app.ontouchend = null;
   $$('.sheet-wrap').forEach((s) => s.remove());
   window.scrollTo(0, 0);
   const [, view = '', id] = (location.hash.slice(1) || '/').split('/');
   const tab = { '': 'list', tyden: 'tyden', new: 'new', foto: 'new', shop: 'shop', more: 'more' }[view] || '';
   $$('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
 
-  const session = await store.session();
-  if (!session) return renderLogin();
+  if (store.mode === 'supabase' && !(await store.session())) return renderLogin();
   $('#tabbar').hidden = false;
-  $('#modeBadge').hidden = store.mode !== 'local';
+  // Štítek nahoře: testovací převod fotek, nebo edice s databází spuštěná jen v zařízení (zkušební)
+  const badge = EDICE.supabase && store.mode !== 'supabase' ? 'DEMO' : AI.testMode ? 'TEST AI' : '';
+  $('#modeBadge').textContent = badge;
+  $('#modeBadge').hidden = !badge;
 
   try {
     if (view === 'r') await renderDetail(decodeURIComponent(id));
+    else if (view === 'vareni') await renderCook(decodeURIComponent(id));
     else if (view === 'edit') await renderEdit(decodeURIComponent(id));
     else if (view === 'new') await renderEdit(null);
     else if (view === 'foto') await renderFoto();
@@ -452,13 +597,14 @@ async function route() {
 /* ================= Přihlášení ================= */
 
 function renderLogin() {
-  setTitle('Martinčina kuchařka');
+  setTitle(APP_NAME);
   $('#tabbar').hidden = true;
+  $('#modeBadge').hidden = true;
   app.innerHTML = `
     <form class="login form" id="loginForm">
       ${bouquet()}
-      <h2 class="script">Martinčina kuchařka</h2>
-      <p>Přihlaste se, recepty uvidíte jen vy dva.</p>
+      <h2 class="script">${esc(APP_NAME)}</h2>
+      <p>${esc(EDICE.prihlaseni || 'Přihlaste se ke svým receptům.')}</p>
       <label for="em">E-mail</label>
       <input type="email" id="em" autocomplete="username" required>
       <label for="pw">Heslo</label>
@@ -488,7 +634,7 @@ function matches(r, words) {
 }
 
 async function renderList() {
-  setTitle('Martinčina kuchařka');
+  setTitle(APP_NAME);
   const recipes = await loadRecipes();
   const cats = sortCats(recipes.flatMap((r) => r.categories));
   if (state.filter !== 'all' && state.filter !== 'fav' && !cats.includes(state.filter)) state.filter = 'all';
@@ -531,7 +677,7 @@ async function renderList() {
     }
     const urls = await store.photoUrls(list.map((r) => r.photos[0]).filter(Boolean));
     $('#cards').innerHTML = list.map((r) => {
-      const meta = r.status === 'ceka' ? '✍️ Čeká na přepis'
+      const meta = r.status === 'ceka' ? `✍️ ${PENDING}`
         : [r.categories.join(', '), formatMinutes(r.time_minutes), r.servings ? `${r.servings} ${plural(r.servings, 'porce', 'porce', 'porcí')}` : '']
           .filter(Boolean).join(' · ');
       const thumb = r.photos[0] && urls[r.photos[0]]
@@ -594,7 +740,8 @@ async function renderDetail(id) {
       ${r.tags.map((t) => `<span class="pill">#${esc(t)}</span>`).join('')}
     </div>
 
-    ${r.status === 'ceka' ? `<div class="notice">✍️ <div><b>Čeká na přepis</b>Recept je zatím jen nafocený. Claude ho přepíše do ingrediencí a postupu – do té doby můžete vařit podle fotky (ťukněte na ni pro zvětšení).</div></div>` : ''}
+    ${r.status === 'ceka' ? `<div class="notice">✍️ <div><b>${PENDING}</b>Recept je zatím jen nafocený.${BY_CLAUDE ? ' Claude ho přepíše do ingrediencí a postupu.' : ''} Do té doby můžete vařit podle fotky (ťukněte na ni pro zvětšení).
+      ${BY_CLAUDE ? '' : '<div class="row"><button class="btn primary" id="convertNow">Převést teď</button></div>'}</div></div>` : ''}
 
     ${r.ingredients.length ? `<div class="section">
       ${h3('Ingredience')} <span class="spacer"></span>
@@ -609,9 +756,10 @@ async function renderDetail(id) {
       <ol class="steps" id="steps">${r.steps.map((s, i) => `<li data-i="${i}">${esc(s)}</li>`).join('')}</ol></div>` : ''}
 
     ${r.notes ? `<div class="section">${h3('Poznámky')}</h3><div class="notes">${esc(r.notes)}</div></div>` : ''}
-    ${r.source ? `<p class="kv" style="margin-top:14px">Zdroj: <b>${esc(r.source)}</b></p>` : ''}
+    ${r.source ? `<p class="kv" style="margin-top:14px">Původ: <b>${esc(r.source)}</b></p>` : ''}
 
     <div class="row">
+      ${r.steps.length ? `<a class="btn primary" href="#/vareni/${encodeURIComponent(r.id)}">👩‍🍳 Vařit krok za krokem</a>` : ''}
       <a class="btn" href="#/edit/${encodeURIComponent(r.id)}">${ICON.edit} Upravit</a>
       <a class="btn" href="#/tyden/${encodeURIComponent(r.id)}">${ICON.calendar} Naplánovat</a>
       <button class="btn" id="shareBtn">${ICON.share} Sdílet</button>
@@ -636,12 +784,11 @@ async function renderDetail(id) {
     $('#addSel').onclick = async () => {
       const factor = r.servings && servings ? servings / r.servings : 1;
       const items = [...selected].sort((a, b) => a - b).map((i) => r.ingredients[i])
-        .map((ing) => ({ name: ing.name, amount: ingredientAmount(ing, factor) || null, recipe_id: r.id, recipe_title: r.title }));
+        .map((ing) => ({ name: ing.name, qty: ing.qty == null ? null : ing.qty * factor, unit: ing.unit,
+          amount: ingredientAmount(ing, factor) || null, recipe_id: r.id, recipe_title: r.title }));
       try {
-        await store.addShopping(items);
-        toast(`Přidáno do nákupu: ${items.length} ${plural(items.length, 'položka', 'položky', 'položek')}`);
+        toast(shopMsg(await addToShopping(items)));
         selected.clear();
-        await loadShopping();
         drawIngredients();
       } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
     };
@@ -665,6 +812,19 @@ async function renderDetail(id) {
 
   $$('.photos img').forEach((img) => (img.onclick = () => openLightbox(img.src)));
 
+  const conv = $('#convertNow');
+  if (conv) conv.onclick = async () => {
+    conv.disabled = true;
+    conv.textContent = 'Čtu recept z fotky…';
+    try {
+      await convertToDraft((await Promise.all(r.photos.map((p) => store.photoBlob(p)))).filter(Boolean), r);
+    } catch (err) {
+      toast('Převod se nepovedl: ' + err.message);
+      conv.disabled = false;
+      conv.textContent = 'Převést teď';
+    }
+  };
+
   // Sdílí se v počtu porcí, který je právě nastavený
   $('#shareBtn').onclick = () => openShare(r, servings, urls);
 
@@ -681,28 +841,34 @@ async function renderDetail(id) {
 
 /* ================= Sdílení receptu ================= */
 
-// Aplikace je česky; jen samotné recepty mohou mít vietnamský překlad (recipes.translations.vi),
-// který připravuje Claude. Při sdílení se dá vybrat, ve kterém jazyce recept poslat.
-const SHARE_LANGS = [['cs', '🇨🇿 Česky'], ['vi', '🇻🇳 Vietnamsky']];
-const SHARE_TEXTS = {
-  cs: { ing: 'Ingredience', steps: 'Postup', footer: '— z Martinčiny kuchařky 🌸', brand: 'Martinčina kuchařka',
-    photo: '(recept je na fotce)', portions: ['porce', 'porce', 'porcí'], h: 'h', min: 'min' },
-  vi: { ing: 'Nguyên liệu', steps: 'Cách làm', footer: '— từ Sổ nấu ăn của Martinka 🌸', brand: 'Sổ nấu ăn của Martinka',
-    photo: '(công thức nằm trong ảnh)', portions: ['phần', 'phần', 'phần'], h: 'giờ', min: 'phút' },
+// Aplikace je česky; samotné recepty mohou mít překlady (recipes.translations.<jazyk>).
+// Které jazyky edice nabízí, určuje config.js (jazykyReceptu). Další jazyk = nový záznam v LANGS.
+const LANGS = {
+  cs: { label: '🇨🇿 Česky', name: 'česká', ing: 'Ingredience', steps: 'Postup',
+    photo: '(recept je na fotce)', portions: ['porce', 'porce', 'porcí'], h: 'h', min: 'min', cats: {} },
+  vi: { label: '🇻🇳 Vietnamsky', name: 'vietnamská', ing: 'Nguyên liệu', steps: 'Cách làm',
+    photo: '(công thức nằm trong ảnh)', portions: ['phần', 'phần', 'phần'], h: 'giờ', min: 'phút',
+    cats: { 'Snídaně': 'Bữa sáng', 'Polévky': 'Súp & canh', 'Obědy': 'Bữa trưa', 'Večeře': 'Bữa tối', 'Přílohy': 'Món ăn kèm',
+      'Omáčky': 'Nước sốt', 'Saláty': 'Salad', 'Zákusky': 'Món tráng miệng', 'Pečivo': 'Bánh mì & bánh nướng', 'Nápoje': 'Đồ uống',
+      'Zavařování': 'Mứt & đồ muối', 'Ostatní': 'Khác' } },
 };
-const CAT_VI = { 'Snídaně': 'Bữa sáng', 'Polévky': 'Súp & canh', 'Obědy': 'Bữa trưa', 'Večeře': 'Bữa tối', 'Přílohy': 'Món ăn kèm',
-  'Omáčky': 'Nước sốt', 'Saláty': 'Salad', 'Zákusky': 'Món tráng miệng', 'Pečivo': 'Bánh mì & bánh nướng', 'Nápoje': 'Đồ uống',
-  'Zavařování': 'Mứt & đồ muối', 'Ostatní': 'Khác' };
-const hasVi = (r) => !!r.translations?.vi?.title;
+const RECIPE_LANGS = (EDICE.jazykyReceptu || []).filter((l) => LANGS[l]);
+const hasLang = (r, l) => l === 'cs' || !!r.translations?.[l]?.title;
+// Texty pro sdílení v daném jazyce včetně názvu a patičky edice
+function shareTexts(lang) {
+  const t = LANGS[lang] || LANGS.cs, ed = EDICE.sdileni?.[lang] || EDICE.sdileni?.cs || {};
+  return { ...t, brand: ed.brand || APP_NAME, footer: ed.footer || `— z aplikace ${APP_NAME} 🌸` };
+}
 
-// Recept v daném jazyce: vietnamský překlad, pokud existuje, jinak český originál
+// Recept v daném jazyce: překlad, pokud existuje, jinak český originál
 function loc(r, lang) {
-  const v = lang === 'vi' && hasVi(r) && r.translations.vi;
+  const v = lang !== 'cs' && hasLang(r, lang) && r.translations[lang];
   if (!v) return r;
+  const cats = LANGS[lang]?.cats || {};
   return {
     ...r,
     title: v.title,
-    categories: r.categories.map((c) => CAT_VI[c] || c),
+    categories: r.categories.map((c) => cats[c] || c),
     ingredients: Array.isArray(v.ingredients) && v.ingredients.length ? v.ingredients.map(normalizeIngredient).filter(Boolean) : r.ingredients,
     steps: Array.isArray(v.steps) && v.steps.length ? v.steps.map(String) : r.steps,
     notes: v.notes ?? r.notes,
@@ -718,7 +884,7 @@ function shareMeta(r, servings, L, sep) {
 
 // Recept jako čitelný text do zprávy (WhatsApp, Messenger, e-mail…)
 function recipeText(orig, servings, lang = 'cs') {
-  const r = loc(orig, lang), L = SHARE_TEXTS[lang] || SHARE_TEXTS.cs;
+  const r = loc(orig, lang), L = shareTexts(lang);
   const factor = r.servings && servings ? servings / r.servings : 1;
   const meta = shareMeta(r, servings, L, ' · ');
   const ingHead = `🛒 ${L.ing.toUpperCase()}`;
@@ -756,7 +922,7 @@ function wrapLines(ctx, text, maxWidth) {
 // Recept jako jeden obrázek: nahoře hlavní fotka, pod ní ingredience a postup.
 // Messenger a další aplikace u sdílení s fotkou text často zahodí – v obrázku zůstane všechno.
 async function recipeCard(orig, servings, photoBlob, lang = 'cs') {
-  const r = loc(orig, lang), L = SHARE_TEXTS[lang] || SHARE_TEXTS.cs;
+  const r = loc(orig, lang), L = shareTexts(lang);
   await document.fonts?.ready;
   const W = 1080, PAD = 70, TW = W - PAD * 2;
   const factor = r.servings && servings ? servings / r.servings : 1;
@@ -860,13 +1026,14 @@ async function recipeCard(orig, servings, photoBlob, lang = 'cs') {
 
 async function openShare(r, servings, urls) {
   // Jazyk se nabízí jen u receptů s překladem; poslední volba se pamatuje
+  const langs = ['cs', ...RECIPE_LANGS.filter((l) => hasLang(r, l))];
   let lang = 'cs';
-  if (hasVi(r)) { try { lang = localStorage.getItem('rc_share_lang') === 'vi' ? 'vi' : 'cs'; } catch { /* bez úložiště */ } }
+  try { const saved = localStorage.getItem('rc_share_lang'); if (langs.includes(saved)) lang = saved; } catch { /* bez úložiště */ }
   let text = recipeText(r, servings, lang);
   const firstPhoto = r.photos[0] && urls[r.photos[0]];
   const canFiles = !!(navigator.canShare && navigator.canShare({ files: [new File([''], 'x.jpg', { type: 'image/jpeg' })] }));
   // „Jako obrázek“ se pamatuje celkově; „s fotkou“ u každého receptu zvlášť
-  // (u receptů, kde je první fotka jen papírek, ji Martinka vypne a už to tak zůstane)
+  // (u receptů, kde je první fotka jen papírek, ji uživatel vypne a už to tak zůstane)
   const store_ = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { return null; } };
   let noPhotoIds = [];
   try { noPhotoIds = JSON.parse(store_('rc_share_nophoto')) || []; } catch { /* nic */ }
@@ -891,9 +1058,9 @@ async function openShare(r, servings, urls) {
   const draw = (busy = false) => {
     sheet.innerHTML = `<div class="sheet">
       <div class="sheet-head"><b>Sdílet recept</b><button class="icon-btn" data-act="close" aria-label="Zavřít">${ICON.x}</button></div>
-      ${hasVi(r) ? `<div class="seg share-lang">${SHARE_LANGS.map(([l, label]) =>
-        `<button class="chip ${lang === l ? 'on' : ''}" data-act="lang" data-lang="${l}" ${busy ? 'disabled' : ''}>${label}</button>`).join('')}</div>
-        ${r.translations.vi.stale && lang === 'vi' ? '<p class="hint">Recept se po překladu změnil – vietnamská verze nemusí odpovídat.</p>' : ''}` : ''}
+      ${langs.length > 1 ? `<div class="seg share-lang">${langs.map((l) =>
+        `<button class="chip ${lang === l ? 'on' : ''}" data-act="lang" data-lang="${l}" ${busy ? 'disabled' : ''}>${LANGS[l].label}</button>`).join('')}</div>
+        ${lang !== 'cs' && r.translations[lang]?.stale ? `<p class="hint">Recept se po překladu změnil – ${LANGS[lang].name} verze nemusí odpovídat.</p>` : ''}` : ''}
       <button class="btn primary block" data-act="send" ${busy ? 'disabled' : ''}>${ICON.share} ${busy ? 'Připravuji obrázek…' : 'Poslat'}</button>
       <div class="share-opts">
         <span class="seg">
@@ -975,26 +1142,214 @@ function openLightbox(src) {
   lb.onclick = () => (lb.hidden = true);
 }
 
+/* ================= Režim vaření: krok za krokem ================= */
+
+// Doby v textu kroku: „peč 40 minut“, „30–40 min“, „1 hodinu“, „1,5 h“ → minuty
+const TIME_RE = /(\d+(?:[.,]\d+)?)(?:\s*[–-]\s*(\d+(?:[.,]\d+)?))?\s*(minut[ay]?|min\.?|hodin[ya]?|hodinu|hod\.?|h)(?!\p{L})/giu;
+function stepTimes(text) {
+  const out = [];
+  for (const m of String(text).matchAll(TIME_RE)) {
+    const k = /^h/i.test(m[3]) ? 60 : 1;
+    for (const v of [m[1], m[2]].filter(Boolean)) {
+      const min = Math.round(parseFloat(v.replace(',', '.')) * k);
+      if (min > 0 && min <= 24 * 60 && !out.includes(min)) out.push(min);
+    }
+  }
+  return out;
+}
+
+// Minutky běží i po odchodu z režimu vaření; lišta s nimi je nahoře na každé obrazovce.
+// Ukládají se do zařízení, takže přežijí i zavření nebo obnovení aplikace.
+const timers = (() => {
+  try { return JSON.parse(localStorage.getItem('bk_timers')) || []; } catch { return []; }
+})();
+let timerTick = null;
+const saveTimers = () => { try { localStorage.setItem('bk_timers', JSON.stringify(timers)); } catch { /* bez úložiště */ } };
+
+function startTimer(label, minutes) {
+  timers.push({ id: uuid(), label, end: Date.now() + minutes * 60000, done: false });
+  saveTimers();
+  drawTimers();
+  toast(`Minutka nastavená na ${formatMinutes(minutes)}`);
+}
+
+function drawTimers() {
+  let bar = $('#timerBar');
+  saveTimers();
+  if (timers.length && !timerTick) timerTick = setInterval(drawTimers, 1000);
+  if (!timers.length) {
+    bar?.remove();
+    clearInterval(timerTick);
+    timerTick = null;
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'timerBar';
+    bar.className = 'timer-bar';
+    $('.topbar').after(bar);
+    bar.onclick = (e) => {
+      const id = e.target.closest('[data-tid]')?.dataset.tid;
+      const t = timers.find((x) => x.id === id);
+      if (!t || (!t.done && !confirm(`Zrušit minutku „${t.label}“?`))) return;
+      timers.splice(timers.indexOf(t), 1);
+      drawTimers();
+    };
+  }
+  const now = Date.now();
+  for (const t of timers) if (!t.done && t.end <= now) { t.done = true; ring(t); }
+  bar.innerHTML = timers.map((t) => {
+    const s = Math.max(0, Math.round((t.end - now) / 1000));
+    const left = s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+      : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    return `<button class="timer ${t.done ? 'done' : ''}" data-tid="${t.id}">
+      ⏱ <b>${t.done ? 'Hotovo!' : left}</b> <small>${esc(t.label)}</small> ${ICON.x}</button>`;
+  }).join('');
+}
+
+// Upozornění: zvuk a vibrace (při zhasnutém displeji to zařídí až Android aplikace)
+function ring(t) {
+  toast(`⏰ Čas vypršel: ${t.label}`);
+  navigator.vibrate?.([400, 200, 400, 200, 400]);
+  try {
+    const ctx = new AudioContext();
+    [0, 0.5, 1, 1.5].forEach((d) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880;
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.3, ctx.currentTime + d);
+      g.gain.setValueAtTime(0, ctx.currentTime + d + 0.3);
+      o.start(ctx.currentTime + d);
+      o.stop(ctx.currentTime + d + 0.35);
+    });
+  } catch { /* bez zvuku */ }
+}
+
+async function keepScreenOn() {
+  if (!('wakeLock' in navigator) || (state.wakeLock && !state.wakeLock.released)) return;
+  try { state.wakeLock = await navigator.wakeLock.request('screen'); } catch { /* telefon nepovolil */ }
+}
+
+async function renderCook(id) {
+  const r = (await loadRecipes()).find((x) => x.id === id);
+  if (!r || !r.steps.length) { location.replace('#/'); return; }
+  setTitle(r.title, true);
+  $('#tabbar').hidden = true;
+  keepScreenOn();
+  let i = state.cookStep?.id === id ? Math.min(state.cookStep.i, r.steps.length - 1) : 0;
+  const short = r.title.length > 24 ? r.title.slice(0, 22) + '…' : r.title;
+
+  const draw = () => {
+    state.cookStep = { id, i };
+    const times = stepTimes(r.steps[i]);
+    app.innerHTML = `<div class="cook">
+      <div class="cook-progress" aria-hidden="true"><span style="width:${((i + 1) / r.steps.length) * 100}%"></span></div>
+      <div class="cook-head"><b>Krok ${i + 1} z ${r.steps.length}</b>
+        ${r.ingredients.length ? `<button class="btn small" id="cookIngs">🛒 Suroviny</button>` : ''}</div>
+      <p class="cook-step">${esc(r.steps[i]).replace(/(\d) (?=°|%|min|hod|h\b|dkg|kg|g\b|ml|dl|l\b)/g, '$1&nbsp;')}</p>
+      ${times.length ? `<div class="cook-timers">${times.map((m) =>
+        `<button class="btn" data-min="${m}">⏱ Minutka ${formatMinutes(m)}</button>`).join('')}</div>` : ''}
+      <div class="cook-nav">
+        <button class="btn" id="cPrev" ${i === 0 ? 'disabled' : ''}>‹ Zpět</button>
+        ${i < r.steps.length - 1
+          ? '<button class="btn primary" id="cNext">Další krok ›</button>'
+          : '<button class="btn primary" id="cDone">Hotovo ✓</button>'}
+      </div>
+    </div>`;
+    $('#cPrev').onclick = () => go(-1);
+    const next = $('#cNext');
+    if (next) next.onclick = () => go(1);
+    const done = $('#cDone');
+    if (done) done.onclick = () => { state.cookStep = null; toast('Dobrou chuť!'); location.hash = '#/r/' + encodeURIComponent(r.id); };
+    $$('[data-min]').forEach((b) => (b.onclick = () => startTimer(`${short}, krok ${i + 1}`, +b.dataset.min)));
+    const ings = $('#cookIngs');
+    if (ings) ings.onclick = showIngredients;
+  };
+  const go = (d) => {
+    const n = i + d;
+    if (n < 0 || n >= r.steps.length) return;
+    i = n;
+    draw();
+    window.scrollTo(0, 0);
+  };
+
+  const showIngredients = () => {
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet-wrap';
+    sheet.innerHTML = `<div class="sheet">
+      <div class="sheet-head"><b>Suroviny</b><button class="icon-btn" data-close aria-label="Zavřít">${ICON.x}</button></div>
+      <ul class="cook-ings">${r.ingredients.map((ing) => ing.section
+        ? `<li class="sec">${esc(ing.section)}</li>`
+        : `<li>${ing.qty != null ? `<b>${esc(ingredientAmount(ing))}</b> ` : ''}${esc(ing.name)}</li>`).join('')}</ul>
+    </div>`;
+    document.body.appendChild(sheet);
+    sheet.onclick = (e) => { if (e.target === sheet || e.target.closest('[data-close]')) sheet.remove(); };
+  };
+
+  // Přejetí prstem doleva/doprava = další/předchozí krok (ruce od těsta, stačí jeden tah)
+  let x0 = null;
+  app.ontouchstart = (e) => { x0 = location.hash.startsWith('#/vareni/') ? e.touches[0].clientX : null; };
+  app.ontouchend = (e) => {
+    if (x0 == null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    x0 = null;
+    if (Math.abs(dx) > 70) go(dx < 0 ? 1 : -1);
+  };
+  draw();
+}
+
+// Po návratu do aplikace znovu zapnout „nezhasínat displej“ (prohlížeč ho při odchodu vypne)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && location.hash.startsWith('#/vareni/')) keepScreenOn();
+});
+document.addEventListener('keydown', (e) => {
+  if (!location.hash.startsWith('#/vareni/') || $('.sheet-wrap')) return;
+  if (e.key === 'ArrowRight') $('#cNext')?.click();
+  if (e.key === 'ArrowLeft') $('#cPrev')?.click();
+});
+
+function releaseWakeLock() {
+  if (state.wakeLock) { state.wakeLock.release().catch(() => {}); state.wakeLock = null; }
+}
+
+function openLightbox(src) {
+  const lb = $('#lightbox');
+  $('img', lb).src = src;
+  lb.hidden = false;
+  lb.onclick = () => (lb.hidden = true);
+}
+
 /* ================= Úprava / nový recept ================= */
 
 async function renderEdit(id) {
   const recipes = await loadRecipes();
-  const orig = id ? recipes.find((x) => x.id === id) : null;
-  if (id && !orig) { location.hash = '#/'; return; }
-  const r = orig ? structuredClone(orig) : normalizeRecipe({ title: '' });
-  if (!orig) r.title = '';
-  setTitle(orig ? 'Upravit recept' : 'Nový recept', true);
+  // 'draft' = návrh receptu z převodu fotky, který uživatel kontroluje
+  const draft = id === 'draft' ? state.draft : null;
+  if (id === 'draft' && !draft) { location.replace('#/foto'); return; }
+  const orig = draft ? recipes.find((x) => x.id === draft.recipe.id) || null : id ? recipes.find((x) => x.id === id) : null;
+  if (id && !draft && !orig) { location.hash = '#/'; return; }
+  const r = draft ? structuredClone(draft.recipe) : orig ? structuredClone(orig) : normalizeRecipe({ title: '' });
+  if (!orig && !draft) r.title = '';
+  setTitle(draft ? 'Zkontrolujte přepis' : orig ? 'Upravit recept' : 'Nový recept', true);
 
   const keptPhotos = [...r.photos];
-  const newPhotos = []; // {file, url}
+  const newPhotos = (draft?.blobs || []).map((file) => ({ file, url: URL.createObjectURL(file) })); // {file, url}
   const urls = await store.photoUrls(keptPhotos);
   const chosenCats = new Set(r.categories);
   const allCats = sortCats([...CATEGORIES.map(([c]) => c), ...recipes.flatMap((x) => x.categories), ...r.categories]);
 
+  const reviewNotice = draft ? `<div class="notice">🔎 <div><b>Zkontrolujte přepis</b>
+      Porovnejte ho s fotkou (ťukněte na ni pro zvětšení), opravte, co nesedí, a uložte.
+      ${draft.uncertain.length ? `<ul class="uncertain">${draft.uncertain.map((u) => `<li>${esc(u)}</li>`).join('')}</ul>` : ''}
+      ${AI.testMode ? '<br><i>Testovací režim: ukázkový přepis, AI zatím není připojená.</i>' : ''}
+      ${state.draftQueue?.length ? `<br>Na fotce ${plural(state.draftQueue.length + 1, 'je', 'jsou', 'je')} ještě ${state.draftQueue.length} ${plural(state.draftQueue.length, 'další recept', 'další recepty', 'dalších receptů')}, ukážu ${plural(state.draftQueue.length, 'ho', 'je', 'je')} po uložení.` : ''}
+    </div></div>` : '';
+
   app.innerHTML = `
-    ${orig ? '' : `<a class="doma-link" href="#/foto">
+    ${draft ? reviewNotice : orig ? '' : `<a class="doma-link" href="#/foto">
       <span class="doma-ico">📷</span>
-      <span><b>Jen nafotit papírek</b><small>Zadáte název a fotku, Claude recept přepíše za vás</small></span>
+      ${BY_CLAUDE ? '<span><b>Jen nafotit papírek</b><small>Zadáte název a fotku, Claude recept přepíše za vás</small></span>'
+        : '<span><b>Vyfotit papírek</b><small>Recept z fotky přepíšu, vy ho jen zkontrolujete</small></span>'}
       <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
     </a>
     <p class="hint" style="margin:14px 2px 0">…nebo recept napište rovnou sem:</p>`}
@@ -1029,9 +1384,8 @@ async function renderEdit(id) {
       <label for="f-notes">Poznámky</label>
       <textarea id="f-notes" rows="3" style="min-height:70px">${esc(r.notes)}</textarea>
 
-      <label for="f-src">Zdroj <span class="help">– odkud recept je</span></label>
-      <input type="text" id="f-src" value="${esc(r.source)}" placeholder="např. sešit od maminky, kniha Vaříme s…">
-
+      <label for="f-src">Původ <span class="help">– od koho a odkud recept je</span></label>
+      <input type="text" id="f-src" value="${esc(r.source)}" placeholder="např. od babičky Marie, 1975">
       <div class="sticky-action"><button class="btn primary" type="submit" id="saveBtn">Uložit recept</button></div>
       ${orig ? '<div class="row"><button class="btn danger" type="button" id="delBtn">Smazat recept</button></div>' : ''}
     </form>`;
@@ -1050,6 +1404,7 @@ async function renderEdit(id) {
       for (const file of files.slice(0, free)) newPhotos.push({ file, url: URL.createObjectURL(file) });
       drawPhotos();
     }));
+    $$('#phs .ph img').forEach((img) => (img.onclick = () => openLightbox(img.src)));
   };
   drawPhotos();
   $('#catPick').onclick = (e) => {
@@ -1075,8 +1430,8 @@ async function renderEdit(id) {
     try {
       const uploaded = [];
       for (const p of newPhotos) {
-        const blob = store.mode === 'local' ? p.file : await compressImage(p.file);
-        uploaded.push(await store.uploadPhoto(r.id, blob));
+        // Vyšší rozlišení, aby šel rukopis na fotce papírku dobře přečíst
+        uploaded.push(await store.uploadPhoto(r.id, await compressImage(p.file, 2200, 0.85)));
       }
       const removed = (orig?.photos || []).filter((p) => !keptPhotos.includes(p));
       const rec = normalizeRecipe({
@@ -1094,14 +1449,19 @@ async function renderEdit(id) {
       });
       // Kdo nafocený recept ručně dopíše, tím ho zároveň zpracoval
       if (rec.ingredients.length || rec.steps.length) rec.status = 'hotovo';
-      // Změněný obsah = vietnamský překlad je zastaralý; Claude ho při /cms-recepty přeloží znovu
+      // Změněný obsah = překlady jsou zastaralé (Claude je při /cms-recepty přeloží znovu)
       const content = (x) => JSON.stringify([x.title, x.ingredients, x.steps, x.notes]);
-      if (orig && hasVi(rec) && content(rec) !== content(orig)) {
-        rec.translations = { ...rec.translations, vi: { ...rec.translations.vi, stale: true } };
+      if (orig && content(rec) !== content(orig)) {
+        for (const [l, t] of Object.entries(rec.translations)) if (t?.title) rec.translations[l] = { ...t, stale: true };
       }
       await store.saveRecipe(rec);
       await store.removePhotos(removed);
       await loadRecipes(true);
+      if (draft) {
+        // Víc receptů na jedné fotce: po uložení jednoho rovnou ukázat další
+        state.draft = state.draftQueue?.shift() || null;
+        if (state.draft) { toast('Recept uložen, další z fotky'); route(); return; }
+      }
       toast('Recept uložen');
       location.replace('#/r/' + encodeURIComponent(rec.id));
     } catch (err) {
@@ -1209,9 +1569,8 @@ async function renderDoma() {
     $$('[data-shop]', res).forEach((b) => (b.onclick = async () => {
       const x = found.find((f) => f.r.id === b.dataset.shop);
       try {
-        await store.addShopping(x.missing.map((ing) => ({ name: ing.name, amount: ingredientAmount(ing) || null, recipe_id: x.r.id, recipe_title: x.r.title })));
-        await loadShopping();
-        toast(`Do nákupu přidáno: ${x.missing.length} ${plural(x.missing.length, 'položka', 'položky', 'položek')}`);
+        toast(shopMsg(await addToShopping(x.missing.map((ing) => ({ name: ing.name, qty: ing.qty, unit: ing.unit,
+          amount: ingredientAmount(ing) || null, recipe_id: x.r.id, recipe_title: x.r.title })))));
         b.disabled = true;
       } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
     }));
@@ -1239,30 +1598,55 @@ async function renderDoma() {
   draw();
 }
 
-/* ================= Nafotit recept (přepíše Claude) ================= */
+/* ================= Recept z fotky papírku (převod přes AI) ================= */
+
+// Pošle fotky k převodu a výsledek otevře ke kontrole (#/edit/draft).
+// base = už uložený nafocený recept („čeká na převod“): zůstanou mu jeho fotky i id.
+async function convertToDraft(blobs, base = null) {
+  const res = await AI.convert(blobs);
+  const list = (res.recipes || []).map((a) => {
+    const rec = aiToRecipe(a);
+    if (base) {
+      Object.assign(rec, { id: base.id, photos: base.photos, favorite: base.favorite, tags: base.tags });
+      rec.title = rec.title || base.title;
+      rec.notes = [base.notes, rec.notes].filter(Boolean).join('\n');
+    }
+    return { recipe: rec, blobs: base ? [] : blobs, uncertain: a.uncertain || [] };
+  });
+  if (!list.length) throw new Error(res.comment || 'Na fotce se nepodařilo najít recept');
+  if (base) list.length = 1;
+  state.draft = list.shift();
+  state.draftQueue = list;
+  location.hash = '#/edit/draft';
+}
 
 async function renderFoto() {
-  setTitle('Nafotit recept', true);
+  // Edice s přepisem přes Clauda: zadá se název a fotka, Claude recept přepíše později mimo aplikaci
+  const title = BY_CLAUDE ? 'Nafotit recept' : 'Recept z papírku';
+  setTitle(title, true);
   const photos = []; // {file, url}
   app.innerHTML = `
-    <div class="hero"><div><div class="script hello">Nafotit recept</div>
-      <div class="sub">Stačí název a fotka papírku. Claude z ní pak udělá ingredience a postup.</div></div></div>
-    <form class="form has-sticky" id="ff">
-      <label for="ff-title">Název jídla</label>
-      <input type="text" id="ff-title" required placeholder="např. Babiččina bábovka" autocomplete="off">
-      <label>Fotky papírku <span class="help">– až ${MAX_PHOTOS}, třeba přední a zadní strana</span></label>
+    <div class="hero"><div><div class="script hello">${title}</div>
+      <div class="sub">${BY_CLAUDE ? 'Stačí název a fotka papírku. Claude z ní pak udělá ingredience a postup.'
+        : 'Vyfoťte papírek nebo stránku ze sešitu. Recept přepíšu a vy ho jen zkontrolujete.'}</div></div></div>
+    <div class="form has-sticky">
+      ${BY_CLAUDE ? `<label for="ff-title">Název jídla</label>
+        <input type="text" id="ff-title" placeholder="např. Babiččina bábovka" autocomplete="off">` : ''}
+      <label>Fotky <span class="help">– až ${MAX_PHOTOS}, třeba přední a zadní strana</span></label>
       <div class="photo-edit" id="ffPhs"></div>
-      <label for="ff-note">Poznámka pro Clauda <span class="help">(nepovinné)</span></label>
-      <input type="text" id="ff-note" placeholder="např. od maminky, dělám dvojnásobek" autocomplete="off">
-      <div class="sticky-action"><button class="btn primary" type="submit" id="ffSave">Uložit k přepisu</button></div>
-    </form>`;
+      <p class="hint">Tip: celý papírek na rovné ploše, dobré světlo, bez stínu ruky nebo telefonu.</p>
+      ${BY_CLAUDE ? `<label for="ff-note">Poznámka pro Clauda <span class="help">(nepovinné)</span></label>
+        <input type="text" id="ff-note" placeholder="např. od maminky, dělám dvojnásobek" autocomplete="off">
+        <div class="sticky-action"><button class="btn primary" type="button" id="ffLater">Uložit k přepisu</button></div>`
+      : `${AI.testMode ? '<p class="hint"><b>Testovací režim:</b> AI zatím není připojená, místo přepisu se ukáže ukázkový recept.</p>' : ''}
+        <div class="sticky-action"><button class="btn primary" type="button" id="ffGo">Převést na recept</button></div>
+        <div class="row"><button class="btn" type="button" id="ffLater">Jen uložit fotku, převést později</button></div>`}
+    </div>`;
 
   const draw = () => {
     $('#ffPhs').innerHTML =
       photos.map((p, i) => `<div class="ph"><img src="${esc(p.url)}" alt=""><button type="button" data-n="${i}" aria-label="Odebrat">×</button></div>`).join('') +
-      (photos.length < MAX_PHOTOS
-        ? photoPickers()
-        : '');
+      (photos.length < MAX_PHOTOS ? photoPickers() : '');
     $$('#ffPhs input[type=file]').forEach((input) => (input.onchange = (e) => {
       const files = [...e.target.files];
       const free = MAX_PHOTOS - photos.length;
@@ -1277,27 +1661,46 @@ async function renderFoto() {
     if (b) { photos.splice(+b.dataset.n, 1); draw(); }
   };
 
-  $('#ff').onsubmit = async (e) => {
-    e.preventDefault();
+  const laterText = $('#ffLater').textContent;
+  const busy = (on, text) => {
+    $('#ffLater').disabled = on;
+    if (BY_CLAUDE) { $('#ffLater').textContent = text || laterText; return; }
+    $('#ffGo').disabled = on;
+    $('#ffGo').textContent = text || 'Převést na recept';
+  };
+  // Vyšší rozlišení, aby šel rukopis dobře přečíst
+  const blobs = () => Promise.all(photos.map((p) => compressImage(p.file, 2200, 0.85)));
+
+  if (!BY_CLAUDE) $('#ffGo').onclick = async () => {
     if (!photos.length) { toast('Přidejte aspoň jednu fotku'); return; }
-    const btn = $('#ffSave');
-    btn.disabled = true;
-    btn.textContent = 'Ukládám…';
+    busy(true, 'Čtu recept z fotky…');
     try {
-      const rec = normalizeRecipe({ title: $('#ff-title').value, notes: $('#ff-note').value.trim(), status: 'ceka' });
-      for (const p of photos) {
-        // Vyšší rozlišení, aby šel rukopis dobře přečíst
-        const blob = store.mode === 'local' ? p.file : await compressImage(p.file, 2200, 0.85);
-        rec.photos.push(await store.uploadPhoto(rec.id, blob));
-      }
+      await convertToDraft(await blobs());
+    } catch (err) {
+      toast('Převod se nepovedl: ' + err.message + '. Fotku můžete uložit a převést později.');
+      busy(false);
+    }
+  };
+
+  // Uložit jen fotku (stav „čeká“): přepíše ji Claude, nebo ji uživatel převede později z detailu receptu
+  $('#ffLater').onclick = async () => {
+    const name = BY_CLAUDE ? $('#ff-title').value.trim() : '';
+    if (BY_CLAUDE && !name) { toast('Napište název jídla'); $('#ff-title').focus(); return; }
+    if (!photos.length) { toast('Přidejte aspoň jednu fotku'); return; }
+    busy(true, 'Ukládám…');
+    try {
+      const rec = normalizeRecipe({
+        title: name || `Nafocený recept ${new Date().toLocaleDateString('cs-CZ')}`,
+        notes: BY_CLAUDE ? $('#ff-note').value.trim() : '', status: 'ceka',
+      });
+      for (const b of await blobs()) rec.photos.push(await store.uploadPhoto(rec.id, b));
       await store.saveRecipe(rec);
       await loadRecipes(true);
-      toast('Uloženo – Claude ho přepíše');
+      toast(BY_CLAUDE ? 'Uloženo – Claude ho přepíše' : 'Fotka uložena, převést ji můžete později');
       location.replace('#/r/' + encodeURIComponent(rec.id));
     } catch (err) {
       toast('Uložení se nepovedlo: ' + err.message);
-      btn.disabled = false;
-      btn.textContent = 'Uložit k přepisu';
+      busy(false);
     }
   };
 }
@@ -1386,24 +1789,30 @@ async function renderPlan(preselectRecipeId) {
     if (sw) sw.onclick = () => shopWeek(withRecipe);
   };
 
+  // Z plánu rovnou nákup: stejné suroviny se sečtou, co je doma, se přeskočí.
+  // Jídla, ze kterých už nákup vznikl, se podruhé nepřidávají (jinak by se množství zdvojila).
   const shopWeek = async (entries) => {
-    await loadShopping();
-    const have = new Set(state.shopping.filter((s) => !s.checked).map((s) => norm(s.name)));
-    const items = [];
-    for (const p of entries) {
+    let done = [];
+    try { done = JSON.parse(localStorage.getItem('bk_plan_shopped')) || []; } catch { /* nic */ }
+    const fresh = entries.filter((p) => !done.includes(p.id));
+    if (!fresh.length) { toast('Suroviny na tato jídla už v nákupu jsou'); return; }
+    const atHome = homeFilter();
+    const items = [], skipped = new Set();
+    for (const p of fresh) {
       const r = recipes.find((x) => x.id === p.recipe_id);
       for (const ing of r.ingredients) {
-        if (ing.section || have.has(norm(ing.name))) continue;
-        have.add(norm(ing.name));
-        items.push({ name: ing.name, amount: ingredientAmount(ing) || null, recipe_id: r.id, recipe_title: r.title });
+        if (ing.section) continue;
+        if (atHome(ing.name)) { skipped.add(ing.name); continue; }
+        items.push({ name: ing.name, qty: ing.qty, unit: ing.unit, amount: ingredientAmount(ing) || null, recipe_id: r.id, recipe_title: r.title });
       }
     }
-    if (!items.length) { toast('Všechno už v nákupním seznamu je'); return; }
-    if (!confirm(`Přidat do nákupu ${items.length} ${plural(items.length, 'surovinu', 'suroviny', 'surovin')} z ${entries.length} ${plural(entries.length, 'jídla', 'jídel', 'jídel')}? Co doma máte, pak v nákupu jen smažete.`)) return;
+    const meals = `${fresh.length} ${plural(fresh.length, 'jídla', 'jídel', 'jídel')}`;
+    const skip = skipped.size ? `\nPřeskočím, co máte doma: ${[...skipped].join(', ')}.` : '';
+    if (!items.length) { toast('Všechno potřebné máte doma'); return; }
+    if (!confirm(`Přidat do nákupu suroviny z ${meals}? Stejné suroviny sečtu.${skip}`)) return;
     try {
-      await store.addShopping(items);
-      await loadShopping();
-      toast(`Do nákupu přidáno: ${items.length} ${plural(items.length, 'položka', 'položky', 'položek')}`);
+      toast(shopMsg(await addToShopping(items)));
+      localStorage.setItem('bk_plan_shopped', JSON.stringify([...done, ...fresh.map((p) => p.id)].slice(-300)));
     } catch (e) { toast('Nepodařilo se přidat: ' + e.message); }
   };
 
@@ -1502,6 +1911,118 @@ async function renderPlan(preselectRecipeId) {
   }
 }
 
+/* ================= Nákup: oddělení obchodu a sčítání surovin ================= */
+
+// Vlastní české rozdělení; klíčová slova bez diakritiky, vyhrává nejdelší shoda
+// („mletá paprika“ je koření, ne zelenina). Pořadí si uživatel přeskládá podle svého obchodu.
+const DEPTS = [
+  ['zelenina', '🥕 Ovoce a zelenina', ['jablk', 'hrusk', 'banan', 'citron', 'limet', 'pomeranc', 'mandarin', 'hrozn', 'jahod', 'malin',
+    'boruvk', 'svestk', 'merunk', 'broskv', 'kiwi', 'ananas', 'mrkev', 'mrkv', 'petrzel', 'celer', 'cibul', 'cesnek', 'brambor',
+    'rajc', 'paprik', 'okurk', 'cuket', 'lilek', 'dyn', 'zeli', 'kapust', 'kvetak', 'brokolic', 'salat', 'spenat', 'porek', 'redkv',
+    'hub', 'zampion', 'kopr', 'pazitk', 'bylink', 'avokad', 'zazvor', 'repa', 'fazolk', 'kedlubn', 'rukol', 'cerstv']],
+  ['pecivo', '🥖 Pečivo', ['chleb', 'rohlik', 'housk', 'baget', 'veka', 'toust', 'tortil', 'pecivo', 'kolac', 'buchty']],
+  ['mlecne', '🥛 Mléčné a chlazené', ['mlek', 'mleko', 'smetan', 'masl', 'syr', 'tvaroh', 'jogurt', 'vejce', 'vajec', 'vajic', 'cottage',
+    'mozzarel', 'parmezan', 'eidam', 'niva', 'kefir', 'podmasl', 'zerve', 'lucin', 'ricott', 'mascarpon', 'slehack', 'drozd', 'hera', 'margarin']],
+  ['maso', '🥩 Maso, uzeniny a ryby', ['maso', 'kure', 'kurec', 'vepr', 'hove', 'teleci', 'kruti', 'kachn', 'husi', 'mlete', 'slanin',
+    'sunk', 'salam', 'klobas', 'parek', 'parky', 'spek', 'jatr', 'ryb', 'losos', 'filet', 'file', 'krevet', 'svickov', 'kotlet', 'zebir']],
+  ['trvanlive', '🥫 Trvanlivé a koření', ['mouk', 'cukr', 'ryz', 'testovin', 'spaget', 'krupic', 'vlock', 'olej', 'ocet', 'octa', 'kaka',
+    'cokolad', 'prasek do peciva', 'kypric', 'vanil', 'rozink', 'orech', 'mandl', 'med', 'dzem', 'konzerv', 'protlak', 'kecup', 'horcic',
+    'majonez', 'strouhank', 'sul', 'soli', 'kmin', 'pepr', 'mleta paprik', 'sladka paprik', 'koreni', 'bobkov', 'skoric', 'hrebicek',
+    'muskat', 'majoran', 'oregan', 'bazalk', 'tymian', 'bujon', 'vyvar', 'kureci vyvar', 'hovezi vyvar', 'cocka', 'cocky', 'fazol', 'hrach', 'cizrn', 'kukuric',
+    'susene hub', 'susenych hub', 'piskot', 'kokos', 'tuna', 'tunak', 'sardink', 'zelatin', 'puding']],
+  ['mrazene', '🧊 Mražené', ['mrazen', 'zmrzlin']],
+  ['napoje', '🧃 Nápoje', ['vino', 'pivo', 'dzus', 'mineralk', 'rum', 'limonad', 'sirup', 'kava', 'caj']],
+  ['ostatni', '🧺 Ostatní', []],
+];
+const DEPT_LABEL = Object.fromEntries(DEPTS.map(([k, l]) => [k, l]));
+
+function deptOf(name) {
+  const n = norm(name);
+  let best = 'ostatni', len = 0;
+  for (const [key, , kws] of DEPTS) {
+    for (const kw of kws) if (kw.length > len && n.includes(kw)) { best = key; len = kw.length; }
+  }
+  return best;
+}
+
+function deptOrder() {
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem('bk_dept_order')) || []; } catch { /* výchozí */ }
+  const keys = DEPTS.map(([k]) => k);
+  return [...saved.filter((k) => keys.includes(k)), ...keys.filter((k) => !saved.includes(k))];
+}
+
+// Množství v základní jednotce, aby šlo sčítat (25 dkg + 200 g = 450 g)
+const UNIT_BASE = { g: ['g', 1], dkg: ['g', 10], kg: ['g', 1000], ml: ['ml', 1], cl: ['ml', 10], dl: ['ml', 100], l: ['ml', 1000],
+  ks: ['ks', 1], kus: ['ks', 1], kusy: ['ks', 1], 'kusů': ['ks', 1] };
+function baseQty(qty, unit) {
+  const u = UNIT_BASE[String(unit || '').toLowerCase()];
+  return u ? { q: qty * u[1], u: u[0] } : { q: qty, u: String(unit || '').toLowerCase() };
+}
+function prettyAmount(q, u) {
+  if (u === 'g' && q >= 1000) return `${formatQty(q / 1000, 'kg')} kg`;
+  if (u === 'ml' && q >= 1000) return `${formatQty(q / 1000, 'l')} l`;
+  return [formatQty(q, u), u].filter(Boolean).join(' ');
+}
+
+// Stejná surovina i v jiném pádě („hladké mouky“ = „hladká mouka“), ale ne „mouka“ = „hrubá mouka“
+function sameName(a, b) {
+  const wa = words(a), wb = words(b);
+  return wa.length === wb.length && wa.every((w, i) => wordMatches(w, wb[i]) || wordMatches(wb[i], w));
+}
+
+function mergeAmount(a, b) {
+  if (b.qty == null) return a.amount || !b.amount ? {} : { amount: b.amount };
+  if (a.qty == null) return a.amount ? { amount: `${a.amount} + ${b.amount}` } : { qty: b.qty, unit: b.unit, amount: b.amount };
+  const x = baseQty(a.qty, a.unit), y = baseQty(b.qty, b.unit);
+  if (x.u !== y.u) return { qty: null, unit: '', amount: `${a.amount} + ${b.amount}` };
+  const q = x.q + y.q;
+  return { qty: q, unit: x.u, amount: prettyAmount(q, x.u) };
+}
+
+// Přidá do nákupu; stejné suroviny, které už v seznamu jsou, sečte
+async function addToShopping(items) {
+  await loadShopping();
+  const open = state.shopping.filter((s) => !s.checked);
+  const adds = [], changed = new Set();
+  for (const raw of items) {
+    const it = { qty: null, unit: '', amount: null, ...raw };
+    const ex = [...open, ...adds].find((s) => sameName(s.name, it.name));
+    if (!ex) { adds.push({ ...it, dept: it.dept || deptOf(it.name) }); continue; }
+    Object.assign(ex, mergeAmount(ex, it));
+    const from = String(ex.recipe_title || '').split(', ').filter(Boolean);
+    if (it.recipe_title && !from.includes(it.recipe_title)) ex.recipe_title = [...from, it.recipe_title].join(', ');
+    if (!adds.includes(ex)) changed.add(ex);
+  }
+  if (adds.length) await store.addShopping(adds);
+  for (const ex of changed) {
+    await store.updateShopping(ex.id, { qty: ex.qty, unit: ex.unit, amount: ex.amount, recipe_title: ex.recipe_title });
+  }
+  await loadShopping();
+  return { added: adds.length, merged: changed.size };
+}
+
+const shopMsg = ({ added, merged }) => {
+  const parts = [
+    added ? `${added} ${plural(added, 'nová položka', 'nové položky', 'nových položek')}` : '',
+    merged ? `${merged} ${plural(merged, 'sečtená', 'sečtené', 'sečtených')} s tím, co už v seznamu bylo` : '',
+  ].filter(Boolean);
+  return parts.length ? `Do nákupu: ${parts.join(', ')}` : 'Vše už v nákupu je';
+};
+
+// Suroviny, které jsou doma (seznam z „Co je doma“ a volitelně sůl, pepř…)
+function homeFilter() {
+  let haves = [];
+  try { haves = JSON.parse(localStorage.getItem('rc_doma')) || []; } catch { /* nic */ }
+  const useStaples = localStorage.getItem('rc_doma_staples') !== '0';
+  const hw = haves.map(words).filter((h) => h.length);
+  return (name) => {
+    const iws = words(name);
+    return hw.some((h) => h.every((x) => iws.some((iw) => wordMatches(x, iw))))
+      || (useStaples && iws.some((iw) => STAPLES.includes(iw)));
+  };
+}
+
 /* ================= Nákupní seznam ================= */
 
 async function renderShop() {
@@ -1528,6 +2049,9 @@ async function renderShop() {
           <button type="button" class="chip" data-amt="1 balení">1 balení</button>
           <button type="button" class="chip" data-amt="1 ks">1 ks</button>
         </div>
+        <label class="dept-pick">Oddělení
+          <select name="dept">${DEPTS.map(([k, l]) => `<option value="${k}" ${(i.dept || deptOf(i.name)) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        </label>
         <div class="row">
           <button type="button" class="btn" data-act="cancel">Zrušit</button>
           <button type="submit" class="btn primary">Uložit</button>
@@ -1548,20 +2072,25 @@ async function renderShop() {
     const open = state.shopping.filter((i) => !i.checked);
     const done = state.shopping.filter((i) => i.checked);
     updateShopBadge();
+    // Nekoupené položky po odděleních v pořadí, jak jdou v obchodě
+    const groups = deptOrder().map((k) => [k, open.filter((i) => (i.dept || deptOf(i.name)) === k)]).filter(([, l]) => l.length);
     $('#shopBody').innerHTML = !state.shopping.length
       ? empty('Seznam je prázdný', 'Přidejte položku nahoře, nebo v receptu ťukněte na ingredience, které chybí.')
       : `${open.length ? `<div class="group-title"><span>Koupit (${open.length})</span>
-            ${navigator.share ? `<button class="link-btn" id="shareBtn">Poslat seznam</button>` : ''}</div>
-          <p class="hint">Ťukněte na položku a upravte množství (třeba „1 balení“), nebo ho smažte.</p>
-          <ul class="shop-list">${open.map(item).join('')}</ul>` : empty('Vše nakoupeno', 'Hezky jste to zvládli.')}
+            <span>${navigator.share ? `<button class="link-btn" id="shareBtn">Poslat seznam</button> · ` : ''}<button class="link-btn" id="deptBtn">Pořadí oddělení</button></span></div>
+          <p class="hint">Ťukněte na položku a upravte množství (třeba „1 balení“) nebo oddělení.</p>
+          ${groups.map(([k, list]) => `<div class="dept-title">${DEPT_LABEL[k]}</div>
+            <ul class="shop-list">${list.map(item).join('')}</ul>`).join('')}` : empty('Vše nakoupeno', 'Hezky jste to zvládli.')}
          ${done.length ? `<div class="group-title"><span>V košíku (${done.length})</span>
             <button class="link-btn" id="clearDone">Smazat odškrtnuté</button></div>
           <ul class="shop-list">${done.map(item).join('')}</ul>` : ''}`;
     const share = $('#shareBtn');
     if (share) share.onclick = () => navigator.share({
       title: 'Nákupní seznam',
-      text: open.map((i) => `• ${i.name}${i.amount ? ` (${i.amount})` : ''}`).join('\n'),
+      text: groups.map(([k, list]) => `${DEPT_LABEL[k]}\n${list.map((i) => `• ${i.name}${i.amount ? ` (${i.amount})` : ''}`).join('\n')}`).join('\n\n'),
     }).catch(() => {});
+    const deptBtn = $('#deptBtn');
+    if (deptBtn) deptBtn.onclick = openDeptOrder;
     const clear = $('#clearDone');
     if (clear) clear.onclick = async () => {
       const ids = done.map((i) => i.id);
@@ -1576,7 +2105,11 @@ async function renderShop() {
       form.onsubmit = async (e) => {
         e.preventDefault();
         const it = state.shopping.find((i) => i.id === form.dataset.form);
-        const patch = { name: fName.value.trim() || it.name, amount: fAmt.value.trim() || null };
+        const amount = fAmt.value.trim() || null;
+        // Množství i jako číslo, aby šlo sčítat s dalšími přidanými surovinami
+        const pa = amount ? parseIngredient(`${amount} _`) : null;
+        const patch = { name: fName.value.trim() || it.name, amount, qty: pa?.qty ?? null, unit: pa?.unit || '',
+          dept: form.elements.namedItem('dept').value };
         Object.assign(it, patch);
         editing = null;
         draw();
@@ -1614,10 +2147,40 @@ async function renderShop() {
     const amount = p.qty != null ? ingredientAmount(p) : null;
     $('#newItem').value = '';
     try {
-      await store.addShopping([{ name: p.name, amount }]);
-      await loadShopping();
+      const res = await addToShopping([{ name: p.name, qty: p.qty, unit: p.unit, amount }]);
+      if (res.merged) toast('Už v seznamu bylo, množství jsem sečetl');
       draw();
     } catch (err) { toast('Nepodařilo se přidat: ' + err.message); }
+  };
+
+  // Pořadí oddělení podle obchodu, kam chodíte (pamatuje se v zařízení)
+  const openDeptOrder = () => {
+    let order = deptOrder();
+    const sheet = document.createElement('div');
+    sheet.className = 'sheet-wrap';
+    document.body.appendChild(sheet);
+    const drawSheet = () => {
+      sheet.innerHTML = `<div class="sheet">
+        <div class="sheet-head"><b>Pořadí oddělení</b><button class="icon-btn" data-close aria-label="Zavřít">${ICON.x}</button></div>
+        <p class="hint">Seřaďte oddělení tak, jak jimi procházíte v obchodě.</p>
+        <ul class="dept-order">${order.map((k, n) => `<li><span>${DEPT_LABEL[k]}</span>
+          <button class="btn small" data-up="${n}" ${n === 0 ? 'disabled' : ''} aria-label="Nahoru">↑</button>
+          <button class="btn small" data-down="${n}" ${n === order.length - 1 ? 'disabled' : ''} aria-label="Dolů">↓</button></li>`).join('')}</ul>
+        <div class="row"><button class="link-btn" data-reset>Výchozí pořadí</button></div>
+      </div>`;
+    };
+    sheet.onclick = (e) => {
+      if (e.target === sheet || e.target.closest('[data-close]')) { sheet.remove(); draw(); return; }
+      const b = e.target.closest('button');
+      if (!b) return;
+      const swap = (a, c) => { [order[a], order[c]] = [order[c], order[a]]; };
+      if (b.dataset.up != null) swap(+b.dataset.up, +b.dataset.up - 1);
+      if (b.dataset.down != null) swap(+b.dataset.down, +b.dataset.down + 1);
+      if (b.hasAttribute('data-reset')) order = DEPTS.map(([k]) => k);
+      try { localStorage.setItem('bk_dept_order', JSON.stringify(order)); } catch { /* bez úložiště */ }
+      drawSheet();
+    };
+    drawSheet();
   };
 
   // Změny z druhého telefonu nepřekreslují seznam, dokud se položka upravuje
@@ -1631,28 +2194,29 @@ async function renderShop() {
 async function renderMore() {
   setTitle('Více');
   const recipes = await loadRecipes();
-  const email = await store.userEmail();
+  const email = store.mode === 'supabase' ? await store.userEmail() : '';
   const pending = recipes.filter((r) => r.status === 'ceka');
   app.innerHTML = `
     <div class="section">
       <h3>Účet</h3>
-      ${store.mode === 'local'
-        ? `<p class="kv">Aplikace běží v <b>demo režimu</b> – data jsou jen v tomto prohlížeči. Po vyplnění souboru <b>config.js</b> se připojí ke sdílené databázi.</p>`
-        : `<p class="kv">Přihlášen(a): <b>${esc(email)}</b></p>
-           <div class="row"><button class="btn" id="logout">Odhlásit</button></div>`}
+      ${store.mode === 'supabase'
+        ? `<p class="kv">Přihlášen(a): <b>${esc(email)}</b></p>
+           <div class="row"><button class="btn" id="logout">Odhlásit</button></div>`
+        : '<p class="kv">Recepty jsou zatím uložené jen v tomto zařízení.</p>'}
       <p class="kv">Receptů celkem: <b>${recipes.length}</b></p>
     </div>
 
     <div class="section">
-      <h3>Čeká na přepis (${pending.length})</h3>
-      <p class="hint">Nafocené recepty, které Claude ještě nepřepsal. Na počítači se je dozví sám.</p>
+      <h3>${PENDING} (${pending.length})</h3>
+      <p class="hint">${BY_CLAUDE ? 'Nafocené recepty, které Claude ještě nepřepsal. Na počítači se je dozví sám.'
+        : 'Nafocené recepty, které jste uložili na později. V detailu receptu je tlačítko Převést teď.'}</p>
       ${pending.length ? `<ul class="pending">${pending.map((r) => `<li><a href="#/r/${encodeURIComponent(r.id)}">✍️ ${esc(r.title)}</a></li>`).join('')}</ul>` : ''}
-      <div class="row"><a class="btn primary" href="#/foto">${ICON.camera} Nafotit recept</a></div>
+      <div class="row"><a class="btn primary" href="#/foto">${ICON.camera} ${BY_CLAUDE ? 'Nafotit recept' : 'Recept z papírku'}</a></div>
     </div>
 
     <div class="section form">
       <h3>Import receptů</h3>
-      <p class="hint">Sem nahrajte soubor s recepty (.json), který připraví Claude z vyfocených papírků. Recepty se stejným názvem se přeskočí.</p>
+      <p class="hint">Nahrajte soubor s recepty (.json), třeba zálohu nebo recepty připravené Claudem. Recepty se stejným názvem se přeskočí.</p>
       <label class="btn block" style="margin:0">Vybrat soubor…<input type="file" accept=".json,application/json" id="impFile" hidden></label>
       <label for="impText">…nebo vložte text</label>
       <textarea id="impText" rows="4" placeholder='{"recipes": [ ... ]}'></textarea>
@@ -1665,6 +2229,7 @@ async function renderMore() {
       <p class="hint">Stáhne všechny recepty (bez fotek) do jednoho souboru.</p>
       <div class="row"><button class="btn" id="expBtn">Stáhnout zálohu</button></div>
     </div>`;
+
 
   const lo = $('#logout');
   if (lo) lo.onclick = async () => { await store.signOut(); state.recipes = null; localStorage.removeItem('rc_cache_recipes'); route(); };
@@ -1691,7 +2256,7 @@ async function renderMore() {
         btn.textContent = `Importuji ${added + 1}/${items.length}…`;
         for (const d of (raw.photo_data || []).slice(0, MAX_PHOTOS)) {
           const blob = await dataUrlToBlob(d);
-          rec.photos.push(await store.uploadPhoto(rec.id, store.mode === 'local' ? blob : await compressImage(blob)));
+          rec.photos.push(await store.uploadPhoto(rec.id, await compressImage(blob, 2200, 0.85)));
         }
         await store.saveRecipe(rec);
         existing.add(norm(rec.title));
@@ -1718,12 +2283,16 @@ async function renderMore() {
 
 /* ================= Start ================= */
 
+$('#appleTitle').content = EDICE.kratky || APP_NAME;
 $('#backBtn').onclick = () => (history.length > 1 ? history.back() : (location.hash = '#/'));
 window.addEventListener('hashchange', route);
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && store.mode === 'supabase') loadShopping();
-});
-if (store.mode === 'supabase') store.sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') route(); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
+// Edice s databází: nákup se po návratu do aplikace obnoví, po odhlášení zpět na přihlášení
+if (store.mode === 'supabase') {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadShopping(); });
+  store.sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') route(); });
+}
+
 route().then(loadShopping);
+drawTimers(); // rozběhnuté minutky z minula (a ty, které mezitím doběhly)

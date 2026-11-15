@@ -386,6 +386,7 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
   border-radius: 12px; padding: 10px 12px; max-height: 34vh; overflow-y: auto; margin: 10px 0 12px;
 }
 .share-lang { margin: 0 0 12px; }
+.notice .uncertain { margin: 6px 0 0; padding-left: 18px; }
 .share-opts { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 12px 0 2px; }
 .share-opts .chip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; font-weight: 700; }
 .share-opts .chip svg { width: 18px; height: 18px; }
@@ -398,3 +399,35 @@ pre.sample { background: var(--surface-2); border-radius: 10px; padding: 10px; f
 .edit-item .quick-amt { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .edit-item .quick-amt .chip { padding: 4px 12px; font-size: .82rem; }
 .edit-item .row { margin-top: 10px; }
+
+/* Režim vaření: velké písmo, velká tlačítka */
+.cook { display: flex; flex-direction: column; min-height: calc(100dvh - 120px); }
+.cook-progress { height: 6px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.cook-progress span { display: block; height: 100%; background: var(--gold); transition: width .25s; }
+.cook-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 2px 6px; color: var(--muted); font-size: 1.05rem; }
+.cook-step { font-size: 1.65rem; line-height: 1.45; font-weight: 600; margin: 8px 2px 18px; flex: 1; white-space: pre-wrap; }
+.cook-timers { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.cook-timers .btn { font-size: 1.1rem; padding: 12px 18px; }
+.cook-nav { position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr 2fr; gap: 10px; padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); background: var(--bg); }
+.cook-nav .btn { font-size: 1.2rem; padding: 18px 12px; justify-content: center; }
+.cook-ings { list-style: none; padding: 0; margin: 0; font-size: 1.15rem; line-height: 1.5; }
+.cook-ings li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.cook-ings li.sec { color: var(--sage); font-weight: 800; font-size: .95rem; text-transform: uppercase; border: 0; padding-top: 14px; }
+
+/* Minutky: lišta pod horním pruhem na všech obrazovkách */
+.timer-bar { position: sticky; top: calc(env(safe-area-inset-top) + 56px); z-index: 9; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; padding: 6px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.timer { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 99px; padding: 5px 10px 5px 12px; font-size: .95rem; cursor: pointer; }
+.timer b { font-variant-numeric: tabular-nums; font-size: 1.05rem; }
+.timer small { color: var(--muted); }
+.timer svg { width: 16px; height: 16px; }
+.timer.done { background: var(--brand); color: var(--on-brand); border-color: var(--brand); animation: blink 1s infinite; }
+.timer.done small { color: var(--on-brand); }
+@keyframes blink { 50% { opacity: .55; } }
+
+/* Nákup po odděleních */
+.dept-title { margin: 14px 4px 6px; font-weight: 800; font-size: .9rem; color: var(--sage); }
+.dept-pick { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: .9rem; color: var(--muted); }
+.dept-pick select { flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.dept-order { list-style: none; padding: 0; margin: 0; }
+.dept-order li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.dept-order li span { flex: 1; }

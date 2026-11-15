@@ -1,5 +1,6 @@
-// Offline režim: aplikace se načte i bez signálu. Při změně souborů zvyšte VERSION.
-const VERSION = 'recepty-v20';
+// Offline režim: aplikace se načte i bez signálu.
+// VERSION doplní při vydání nastroje/vydej.mjs (edice + otisk souborů), při vývoji zůstává 'vyvoj'
+const VERSION = 'martinka-48dd846e12';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/apple-touch-icon.png',
@@ -17,7 +18,7 @@ self.addEventListener('activate', (e) => {
 });
 
 // Soubory aplikace: nejdřív síť (aby se projevily úpravy), při výpadku mezipaměť.
-// Volání Supabase (data, přihlášení, fotky) se nekešují.
+// Volání Supabase (data, přihlášení, fotky) a převod fotek se nekešují.
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   const isShell = e.request.method === 'GET' &&
