@@ -1,7 +1,13 @@
 'use strict';
 
 // Edice (Martinčina kuchařka, veřejná…) se liší jen nastavením v config.js, kód je společný
-const EDICE = window.EDICE || { id: 'verejna', nazev: 'Kuchařka', prevod: 'test', jazykyReceptu: [], sdileni: {} };
+// Starý config.js Martinčiny kuchařky (RECEPTY_CONFIG) z mezipaměti prohlížeče musí fungovat dál
+const LEGACY = window.RECEPTY_CONFIG?.supabaseUrl ? {
+  id: 'martinka', nazev: 'Martinčina kuchařka', kratky: 'Martinka', prihlaseni: 'Přihlaste se, recepty uvidíte jen vy dva.',
+  supabase: { url: window.RECEPTY_CONFIG.supabaseUrl, key: window.RECEPTY_CONFIG.supabaseKey }, prevod: 'claude', jazykyReceptu: ['vi'],
+  sdileni: { cs: { brand: 'Martinčina kuchařka', footer: '— z Martinčiny kuchařky 🌸' }, vi: { brand: 'Sổ nấu ăn của Martinka', footer: '— từ Sổ nấu ăn của Martinka 🌸' } },
+} : null;
+const EDICE = window.EDICE || LEGACY || { id: 'verejna', nazev: 'Kuchařka', prevod: 'test', jazykyReceptu: [], sdileni: {} };
 const APP_NAME = EDICE.nazev;
 // 'claude' = recept z fotky přepíše Claude mimo aplikaci; jinak převod přímo v aplikaci (AI)
 const BY_CLAUDE = EDICE.prevod === 'claude';

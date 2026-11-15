@@ -18,3 +18,6 @@ window.EDICE = {
     vi: { brand: 'Sổ nấu ăn của Martinka', footer: '— từ Sổ nấu ăn của Martinka 🌸' },
   },
 };
+
+// Pro starší app.js v mezipaměti telefonů (před spojením edic četl RECEPTY_CONFIG)
+window.RECEPTY_CONFIG = { supabaseUrl: window.EDICE.supabase.url, supabaseKey: window.EDICE.supabase.key };
